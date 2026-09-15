@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">HCT ADAS</string>
+    <string name="app_bootstrap_status">HCT ADAS 工程已启动，USB 摄像头和算法模块待接入。</string>
+</resources>
