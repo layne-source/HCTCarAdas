@@ -8,8 +8,13 @@ import java.util.Objects;
  * The newest frames are preferred because stale frames are not useful for warnings.
  */
 public final class FrameDispatcher implements AutoCloseable {
+    public record Metrics(long offeredFrames, long droppedFrames) {
+    }
+
     private final ArrayDeque<Frame> frames;
     private final int capacity;
+    private long offeredFrames;
+    private long droppedFrames;
     private boolean closed;
 
     public FrameDispatcher(int capacity) {
@@ -29,8 +34,10 @@ public final class FrameDispatcher implements AutoCloseable {
         if (closed) {
             return false;
         }
+        offeredFrames++;
         if (frames.size() == capacity) {
             frames.removeFirst();
+            droppedFrames++;
         }
         frames.addLast(new Frame(nv21, width, height, timestampNanos));
         notifyAll();
@@ -67,6 +74,10 @@ public final class FrameDispatcher implements AutoCloseable {
 
     public synchronized int size() {
         return frames.size();
+    }
+
+    public synchronized Metrics metrics() {
+        return new Metrics(offeredFrames, droppedFrames);
     }
 
     @Override

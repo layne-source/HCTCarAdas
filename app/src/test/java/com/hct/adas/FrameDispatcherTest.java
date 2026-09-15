@@ -18,6 +18,8 @@ public final class FrameDispatcherTest {
         assertTrue(dispatcher.offer(new byte[] {3}, 640, 480, 3L));
 
         assertEquals(2, dispatcher.size());
+        assertEquals(3L, dispatcher.metrics().offeredFrames());
+        assertEquals(1L, dispatcher.metrics().droppedFrames());
         assertEquals(2L, dispatcher.poll().timestampNanos());
         assertEquals(3L, dispatcher.poll().timestampNanos());
         assertNull(dispatcher.poll());

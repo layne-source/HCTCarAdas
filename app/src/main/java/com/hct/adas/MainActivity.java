@@ -2,15 +2,37 @@ package com.hct.adas;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.TextView;
+
+import java.util.Locale;
 
 import com.serenegiant.usb.widget.UVCCameraTextureView;
 
 /** Application entry point for the USB frame-input phase. */
 public final class MainActivity extends Activity {
     private FrameDispatcher frameDispatcher;
+    private FrameConsumer frameConsumer;
     private UsbCameraSource cameraSource;
     private TextView statusView;
+    private final Handler metricsHandler = new Handler(Looper.getMainLooper());
+    private final Runnable metricsUpdater = new Runnable() {
+        @Override
+        public void run() {
+            if (frameDispatcher != null && frameConsumer != null) {
+                FrameDispatcher.Metrics queueMetrics = frameDispatcher.metrics();
+                FrameConsumer.Metrics consumerMetrics = frameConsumer.metrics();
+                setStatus(String.format(
+                        Locale.US,
+                        "USB 帧流 received=%d processed=%d dropped=%d",
+                        queueMetrics.offeredFrames(),
+                        consumerMetrics.processedFrames(),
+                        queueMetrics.droppedFrames()));
+            }
+            metricsHandler.postDelayed(this, 1_000L);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -18,6 +40,9 @@ public final class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         statusView = findViewById(R.id.status);
         frameDispatcher = new FrameDispatcher(2);
+        frameConsumer = new FrameConsumer(frameDispatcher, frame -> {
+            // The detector will consume frames here in the next implementation step.
+        });
         cameraSource = new UsbCameraSource(
                 this,
                 (UVCCameraTextureView) findViewById(R.id.usb_preview),
@@ -44,17 +69,23 @@ public final class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        frameConsumer.start();
         cameraSource.start();
+        metricsHandler.post(metricsUpdater);
     }
 
     @Override
     protected void onStop() {
+        metricsHandler.removeCallbacks(metricsUpdater);
+        frameConsumer.close();
         cameraSource.stop();
         super.onStop();
     }
 
     @Override
     protected void onDestroy() {
+        metricsHandler.removeCallbacks(metricsUpdater);
+        frameConsumer.close();
         cameraSource.close();
         frameDispatcher.close();
         super.onDestroy();
