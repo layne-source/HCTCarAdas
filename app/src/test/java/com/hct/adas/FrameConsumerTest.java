@@ -1,10 +1,12 @@
 package com.hct.adas;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.Test;
 
@@ -13,17 +15,101 @@ public final class FrameConsumerTest {
     public void consumesQueuedFrameAndReportsMetrics() throws Exception {
         FrameDispatcher dispatcher = new FrameDispatcher(2);
         CountDownLatch consumed = new CountDownLatch(1);
-        FrameConsumer consumer = new FrameConsumer(dispatcher, frame -> consumed.countDown());
+        CountDownLatch stopped = new CountDownLatch(1);
+        FrameConsumer consumer = new FrameConsumer(dispatcher, new FrameConsumer.Handler() {
+            public void onFrame(FrameDispatcher.Frame frame) { consumed.countDown(); }
+            public void onStopped() { stopped.countDown(); }
+        });
 
-        consumer.start();
-        dispatcher.offer(new byte[] {1}, 320, 192, 123L);
-
-        assertTrue(consumed.await(1, TimeUnit.SECONDS));
+        try {
+            consumer.start();
+            dispatcher.offer(new byte[] {1}, 320, 192, 123L);
+            assertTrue(consumed.await(1, TimeUnit.SECONDS));
+        } finally {
+            consumer.close();
+            assertTrue(stopped.await(1, TimeUnit.SECONDS));
+            dispatcher.close();
+        }
         FrameConsumer.Metrics metrics = consumer.metrics();
         assertEquals(1L, metrics.processedFrames());
         assertEquals(123L, metrics.lastTimestampNanos());
 
-        consumer.close();
-        dispatcher.close();
+    }
+
+    @Test
+    public void restartWaitsForInFlightInferenceAndItsResourceRelease() throws Exception {
+        FrameDispatcher dispatcher = new FrameDispatcher(2);
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondEntered = new CountDownLatch(1);
+        CountDownLatch bothStopped = new CountDownLatch(2);
+        AtomicInteger releases = new AtomicInteger();
+        AtomicInteger releasesBeforeSecond = new AtomicInteger(-1);
+        FrameConsumer consumer = new FrameConsumer(dispatcher, new FrameConsumer.Handler() {
+            public void onFrame(FrameDispatcher.Frame frame) {
+                if (frame.timestampNanos() == 1L) {
+                    firstEntered.countDown();
+                    boolean released = false;
+                    while (!released) {
+                        try {
+                            releaseFirst.await();
+                            released = true;
+                        } catch (InterruptedException ignored) {
+                            // Simulates a native invocation that cannot be interrupted.
+                        }
+                    }
+                } else {
+                    releasesBeforeSecond.set(releases.get());
+                    secondEntered.countDown();
+                }
+            }
+            public void onStopped() {
+                releases.incrementAndGet();
+                bothStopped.countDown();
+            }
+        });
+        try {
+            consumer.start();
+            dispatcher.offer(new byte[] {1}, 2, 2, 1L);
+            assertTrue(firstEntered.await(1, TimeUnit.SECONDS));
+            consumer.close();
+            consumer.start();
+            dispatcher.offer(new byte[] {2}, 2, 2, 2L);
+            assertFalse(secondEntered.await(100, TimeUnit.MILLISECONDS));
+            releaseFirst.countDown();
+            assertTrue(secondEntered.await(1, TimeUnit.SECONDS));
+            assertEquals(1, releasesBeforeSecond.get());
+        } finally {
+            releaseFirst.countDown();
+            consumer.close();
+            dispatcher.close();
+        }
+        assertTrue(bothStopped.await(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void reportsInferenceFailureAndReleasesHandlerOnWorkerExit() throws Exception {
+        FrameDispatcher dispatcher = new FrameDispatcher(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch stopped = new CountDownLatch(1);
+        FrameConsumer consumer = new FrameConsumer(dispatcher, new FrameConsumer.Handler() {
+            public void onFrame(FrameDispatcher.Frame frame) {
+                entered.countDown();
+                throw new IllegalStateException("model contract mismatch");
+            }
+            public void onStopped() { stopped.countDown(); }
+        });
+        try {
+            consumer.start();
+            dispatcher.offer(new byte[] {1}, 2, 2, 123L);
+            assertTrue(entered.await(1, TimeUnit.SECONDS));
+        } finally {
+            consumer.close();
+            assertTrue(stopped.await(1, TimeUnit.SECONDS));
+            dispatcher.close();
+        }
+        assertEquals(0L, consumer.metrics().processedFrames());
+        assertEquals(1L, consumer.metrics().failedFrames());
+        assertTrue(consumer.metrics().lastError().contains("model contract mismatch"));
     }
 }

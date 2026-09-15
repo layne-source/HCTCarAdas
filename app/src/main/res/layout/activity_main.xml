@@ -4,20 +4,42 @@
     android:layout_height="match_parent"
     android:background="#101010">
 
-    <com.serenegiant.usb.widget.UVCCameraTextureView
+    <TextureView
         android:id="@+id/usb_preview"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/status"
+    <com.hct.adas.VehicleOverlayView
+        android:id="@+id/vehicle_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:background="#99000000"
-        android:padding="16dp"
-        android:text="@string/app_bootstrap_status"
-        android:textColor="#FFFFFFFF"
-        android:textSize="16sp" />
+        android:orientation="vertical"
+        android:padding="12dp">
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_bootstrap_status"
+            android:textColor="#FFFFFFFF"
+            android:textSize="16sp" />
+        <TextView
+            android:id="@+id/metrics"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFFFF"
+            android:textSize="14sp" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/calibration_required"
+            android:textColor="#FFFFD180"
+            android:textSize="14sp" />
+    </LinearLayout>
 
 </FrameLayout>

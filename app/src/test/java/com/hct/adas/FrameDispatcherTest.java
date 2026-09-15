@@ -46,4 +46,15 @@ public final class FrameDispatcherTest {
         assertEquals(320, frame.width());
         assertEquals(192, frame.height());
     }
+
+    @Test
+    public void discardsFramesFromDisconnectedCameraWithoutClosingQueue() {
+        FrameDispatcher dispatcher = new FrameDispatcher(2);
+        dispatcher.offer(new byte[] {1}, 2, 2, 1L);
+        dispatcher.discardPending();
+        assertNull(dispatcher.poll());
+        assertEquals(1L, dispatcher.metrics().droppedFrames());
+        assertTrue(dispatcher.offer(new byte[] {2}, 2, 2, 2L));
+        assertEquals(2L, dispatcher.poll().timestampNanos());
+    }
 }

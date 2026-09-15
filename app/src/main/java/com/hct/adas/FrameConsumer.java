@@ -1,24 +1,34 @@
 package com.hct.adas;
 
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 /** Runs frame processing away from the UVC callback thread. */
 public final class FrameConsumer implements AutoCloseable {
     public interface Handler {
         void onFrame(FrameDispatcher.Frame frame);
+
+        /** Called on the same worker after its last inference, including on failure. */
+        default void onStopped() {
+        }
     }
 
-    public record Metrics(long processedFrames, long lastTimestampNanos) {
+    public record Metrics(long processedFrames, long lastTimestampNanos,
+                          long failedFrames, String lastError) {
     }
 
     private final FrameDispatcher dispatcher;
     private final Handler handler;
-    private final AtomicBoolean running = new AtomicBoolean();
-    private final AtomicLong processedFrames = new AtomicLong();
-    private final AtomicLong lastTimestampNanos = new AtomicLong();
-    private Thread worker;
+    private long processedFrames;
+    private long lastTimestampNanos;
+    private long failedFrames;
+    private String lastError = "";
+    private boolean desiredRunning;
+    private Session session;
+
+    private static final class Session {
+        volatile boolean cancelled;
+        Thread thread;
+    }
 
     public FrameConsumer(FrameDispatcher dispatcher, Handler handler) {
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
@@ -26,48 +36,74 @@ public final class FrameConsumer implements AutoCloseable {
     }
 
     public synchronized void start() {
-        if (running.get()) {
-            return;
+        desiredRunning = true;
+        if (session == null) {
+            launchWorker();
         }
-        running.set(true);
-        worker = new Thread(this::runLoop, "adas-frame-consumer");
-        worker.start();
     }
 
-    private void runLoop() {
-        while (running.get()) {
-            try {
-                FrameDispatcher.Frame frame = dispatcher.await(500L);
-                if (frame == null) {
-                    continue;
+    private void launchWorker() {
+        Session next = new Session();
+        session = next;
+        next.thread = new Thread(() -> runLoop(next), "adas-frame-consumer");
+        next.thread.start();
+    }
+
+    private void runLoop(Session current) {
+        try {
+            while (!current.cancelled) {
+                try {
+                    FrameDispatcher.Frame frame = dispatcher.await(500L);
+                    if (current.cancelled) {
+                        break;
+                    }
+                    if (frame == null) {
+                        continue;
+                    }
+                    handler.onFrame(frame);
+                    synchronized (this) {
+                        lastTimestampNanos = frame.timestampNanos();
+                        processedFrames++;
+                        lastError = "";
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (RuntimeException failure) {
+                    recordFailure(failure);
                 }
-                handler.onFrame(frame);
-                lastTimestampNanos.set(frame.timestampNanos());
-                processedFrames.incrementAndGet();
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return;
-            } catch (RuntimeException ignored) {
-                // A bad frame must not terminate the long-lived camera consumer.
+            }
+        } finally {
+            try {
+                handler.onStopped();
+            } catch (RuntimeException failure) {
+                recordFailure(failure);
+            }
+            synchronized (this) {
+                session = null;
+                // Restart only after the previous worker releases its interpreter.
+                if (desiredRunning) {
+                    launchWorker();
+                }
             }
         }
     }
 
-    public Metrics metrics() {
-        return new Metrics(processedFrames.get(), lastTimestampNanos.get());
+    private synchronized void recordFailure(RuntimeException failure) {
+        failedFrames++;
+        lastError = failure.getClass().getSimpleName() + ": " + failure.getMessage();
+    }
+
+    public synchronized Metrics metrics() {
+        return new Metrics(processedFrames, lastTimestampNanos, failedFrames, lastError);
     }
 
     @Override
     public synchronized void close() {
-        running.set(false);
-        if (worker != null) {
-            worker.interrupt();
-            try {
-                worker.join(1_000L);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-            worker = null;
+        desiredRunning = false;
+        if (session != null) {
+            session.cancelled = true;
+            session.thread.interrupt();
         }
     }
 }

@@ -12,6 +12,11 @@ android {
         targetSdk 36
         versionCode 1
         versionName "0.1.0"
+
+        ndk {
+            // These are the ABIs provided by the existing UVC AAR.
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
     }
 
     buildTypes {
@@ -25,10 +30,15 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    androidResources {
+        noCompress += "tflite"
+    }
 }
 
 dependencies {
     // The existing UVC AAR is copied locally for later frame-source integration.
     implementation files("libs/libusbcamera.aar")
+    implementation "com.google.ai.edge.litert:litert:1.4.1"
     testImplementation "junit:junit:4.13.2"
 }

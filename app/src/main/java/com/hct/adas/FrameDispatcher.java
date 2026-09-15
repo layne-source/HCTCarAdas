@@ -80,6 +80,11 @@ public final class FrameDispatcher implements AutoCloseable {
         return new Metrics(offeredFrames, droppedFrames);
     }
 
+    public synchronized void discardPending() {
+        droppedFrames += frames.size();
+        frames.clear();
+    }
+
     @Override
     public synchronized void close() {
         closed = true;
