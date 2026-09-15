@@ -4,15 +4,63 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.widget.TextView;
 
-/** Initial application shell. Camera and ADAS modules are integrated in later phases. */
+import com.serenegiant.usb.widget.UVCCameraTextureView;
+
+/** Application entry point for the USB frame-input phase. */
 public final class MainActivity extends Activity {
+    private FrameDispatcher frameDispatcher;
+    private UsbCameraSource cameraSource;
+    private TextView statusView;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        TextView status = new TextView(this);
-        status.setText(R.string.app_bootstrap_status);
-        status.setTextSize(20f);
-        status.setPadding(32, 32, 32, 32);
-        setContentView(status);
+        setContentView(R.layout.activity_main);
+        statusView = findViewById(R.id.status);
+        frameDispatcher = new FrameDispatcher(2);
+        cameraSource = new UsbCameraSource(
+                this,
+                (UVCCameraTextureView) findViewById(R.id.usb_preview),
+                frameDispatcher,
+                new UsbCameraSource.Listener() {
+                    @Override
+                    public void onDeviceAttached(android.hardware.usb.UsbDevice device) {
+                        setStatus("USB 摄像头已连接，等待预览");
+                    }
+
+                    @Override
+                    public void onDeviceConnectionChanged(
+                            android.hardware.usb.UsbDevice device, boolean connected) {
+                        setStatus(connected ? "USB 摄像头已打开" : "USB 摄像头连接失败");
+                    }
+
+                    @Override
+                    public void onDeviceDetached(android.hardware.usb.UsbDevice device) {
+                        setStatus("USB 摄像头已断开");
+                    }
+                });
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        cameraSource.start();
+    }
+
+    @Override
+    protected void onStop() {
+        cameraSource.stop();
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        cameraSource.close();
+        frameDispatcher.close();
+        super.onDestroy();
+    }
+
+    private void setStatus(String message) {
+        runOnUiThread(() -> statusView.setText(message));
     }
 }

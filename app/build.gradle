@@ -30,4 +30,5 @@ android {
 dependencies {
     // The existing UVC AAR is copied locally for later frame-source integration.
     implementation files("libs/libusbcamera.aar")
+    testImplementation "junit:junit:4.13.2"
 }
