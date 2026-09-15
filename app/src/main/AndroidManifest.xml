@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -11,7 +12,8 @@
         android:allowBackup="false"
         android:label="HCT ADAS"
         android:supportsRtl="true"
-        android:theme="@style/Theme.HctAdas">
+        android:theme="@style/Theme.HctAdas"
+        tools:replace="android:allowBackup,android:label">
         <activity
             android:name=".MainActivity"
             android:exported="true"
