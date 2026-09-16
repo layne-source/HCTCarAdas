@@ -10,6 +10,8 @@ public record CameraCalibration(int imageWidth, int imageHeight,
                                 double focalLengthYNormalized,
                                 double principalPointYNormalized,
                                 double pitchDegrees) {
+    private static final double MIN_GROUND_RAY_TANGENT = 0.01;
+    private static final double MAX_VALID_DISTANCE_METERS = 200.0;
     public CameraCalibration {
         if (imageWidth <= 0 || imageHeight <= 0) {
             throw new IllegalArgumentException("image dimensions must be positive");
@@ -44,10 +46,47 @@ public record CameraCalibration(int imageWidth, int imageHeight,
         double rayAngle = Math.atan(
                 (bottomYNormalized - principalPointYNormalized) / focalLengthYNormalized);
         double denominator = Math.tan(Math.toRadians(pitchDegrees) + rayAngle);
-        if (!Double.isFinite(denominator) || denominator <= 0.0) {
+        if (!Double.isFinite(denominator) || denominator < MIN_GROUND_RAY_TANGENT) {
             return Double.NaN;
         }
         double distance = cameraHeightMeters / denominator;
-        return Double.isFinite(distance) && distance > 0.0 ? distance : Double.NaN;
+        return Double.isFinite(distance) && distance > 0.0
+                && distance <= MAX_VALID_DISTANCE_METERS ? distance : Double.NaN;
+    }
+
+    public CameraCalibration withPitchDegrees(double newPitch) {
+        return new CameraCalibration(imageWidth, imageHeight, cameraHeightMeters,
+                focalLengthYNormalized, principalPointYNormalized, newPitch);
+    }
+
+    /**
+     * Returns the normalized Y position of the horizon (vanishing line on flat ground).
+     * Satisfies rayAngle = -pitchDegrees => (y_horizon - cy) / fy = tan(-pitch).
+     */
+    public double horizonYNormalized() {
+        double horizon = principalPointYNormalized
+                - focalLengthYNormalized * Math.tan(Math.toRadians(pitchDegrees));
+        return Math.max(0.0, Math.min(1.0, horizon));
+    }
+
+    /**
+     * Creates an initial calibration from installation wizard parameters.
+     * Assumes square pixels and symmetric principal point.
+     */
+    public static CameraCalibration fromWizard(int imageWidth, int imageHeight,
+                                               double cameraHeightMeters,
+                                               double hfovDegrees,
+                                               double initialPitchDegrees) {
+        if (imageWidth <= 0 || imageHeight <= 0) {
+            throw new IllegalArgumentException("dimensions must be positive");
+        }
+        if (!Double.isFinite(hfovDegrees) || hfovDegrees < 30.0 || hfovDegrees > 160.0) {
+            throw new IllegalArgumentException("HFOV must be between 30 and 160 degrees");
+        }
+        double focalLengthPixels = (imageWidth / 2.0) / Math.tan(Math.toRadians(hfovDegrees / 2.0));
+        double focalLengthYNorm = focalLengthPixels / imageHeight;
+        double principalPointYNorm = 0.5;
+        return new CameraCalibration(imageWidth, imageHeight, cameraHeightMeters,
+                focalLengthYNorm, principalPointYNorm, initialPitchDegrees);
     }
 }

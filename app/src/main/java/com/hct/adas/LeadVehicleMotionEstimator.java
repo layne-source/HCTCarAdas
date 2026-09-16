@@ -9,11 +9,11 @@ public final class LeadVehicleMotionEstimator {
     private static final double SPEED_ALPHA = 0.35;
     private long previousId;
     private long previousTimestamp;
+    private double previousRawDistance;
     private double filteredDistance;
     private double filteredSpeed;
     private boolean initialized;
     private CameraCalibration previousCalibration;
-
     public Measurement update(LeadVehicleTracker.Snapshot snapshot,
                               CameraCalibration calibration, int width, int height) {
         if (snapshot == null || snapshot.detection() == null
@@ -26,6 +26,10 @@ public final class LeadVehicleMotionEstimator {
                     Double.NaN, 0.0, 0.0, false);
         }
         VehicleDetector.Detection box = snapshot.detection();
+        if (box.bottom() >= 0.995f || box.left() <= 0.005f || box.right() >= 0.995f) {
+            reset();
+            return new Measurement(snapshot.trackId(), Double.NaN, 0.0, area(box, width, height), false);
+        }
         double distance = calibration.estimateDistanceMeters(box.bottom());
         if (!Double.isFinite(distance)) {
             reset();
@@ -38,17 +42,18 @@ public final class LeadVehicleMotionEstimator {
                 || snapshot.timestampNanos() - previousTimestamp > 2_000_000_000L) {
             filteredDistance = distance;
             filteredSpeed = 0.0;
+            previousRawDistance = distance;
             initialized = true;
             previousCalibration = calibration;
         } else {
             double dt = (snapshot.timestampNanos() - previousTimestamp) / 1_000_000_000.0;
-            double oldDistance = filteredDistance;
-            filteredDistance += DISTANCE_ALPHA * (distance - filteredDistance);
-            double rawSpeed = (oldDistance - filteredDistance) / dt;
+            double rawSpeed = (previousRawDistance - distance) / dt;
+            previousRawDistance = distance;
             if (!Double.isFinite(rawSpeed)) {
                 rawSpeed = 0.0;
             }
             filteredSpeed += SPEED_ALPHA * (rawSpeed - filteredSpeed);
+            filteredDistance += DISTANCE_ALPHA * (distance - filteredDistance);
             closingSpeed = Math.max(-50.0, Math.min(50.0, filteredSpeed));
         }
         previousId = snapshot.trackId();
@@ -61,6 +66,7 @@ public final class LeadVehicleMotionEstimator {
         initialized = false;
         previousId = 0L;
         previousTimestamp = 0L;
+        previousRawDistance = Double.NaN;
         filteredDistance = Double.NaN;
         filteredSpeed = 0.0;
         previousCalibration = null;

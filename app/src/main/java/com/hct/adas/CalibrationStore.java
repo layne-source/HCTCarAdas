@@ -5,6 +5,13 @@ import android.content.SharedPreferences;
 
 /** Persists validated calibration values without coupling them to the detection pipeline. */
 public final class CalibrationStore {
+    public enum Status {
+        UNCONFIGURED,
+        WIZARD_COMPLETED,
+        CALIBRATING,
+        CALIBRATED
+    }
+
     private static final String PREFS = "camera_calibration";
     private static final int VERSION = 1;
     private static final String KEY_VERSION = "version";
@@ -14,7 +21,8 @@ public final class CalibrationStore {
     private static final String KEY_FOCAL_Y = "focal_y_normalized";
     private static final String KEY_PRINCIPAL_Y = "principal_y_normalized";
     private static final String KEY_PITCH = "pitch_degrees";
-
+    private static final String KEY_STATUS = "calibration_status";
+    private static final String KEY_PROGRESS = "learning_progress";
     private final SharedPreferences preferences;
 
     public CalibrationStore(Context context) {
@@ -40,10 +48,37 @@ public final class CalibrationStore {
         }
     }
 
+    public Status loadStatus() {
+        CameraCalibration calibration = load();
+        if (calibration == null) {
+            return Status.UNCONFIGURED;
+        }
+        String name = preferences.getString(KEY_STATUS, null);
+        if (name == null) {
+            return Status.CALIBRATED;
+        }
+        try {
+            return Status.valueOf(name);
+        } catch (IllegalArgumentException invalid) {
+            // Unknown persisted state must fail safe and keep distance warnings disabled.
+            return Status.UNCONFIGURED;
+        }
+    }
+
+    public int loadProgress() {
+        return Math.max(0, Math.min(100, preferences.getInt(KEY_PROGRESS, 0)));
+    }
+
     public void save(CameraCalibration calibration) {
+        save(calibration, Status.CALIBRATED, 100);
+    }
+
+    public void save(CameraCalibration calibration, Status status, int progress) {
         if (calibration == null) {
             throw new IllegalArgumentException("calibration must not be null");
         }
+        Status targetStatus = status == null ? Status.CALIBRATED : status;
+        int clampedProgress = Math.max(0, Math.min(100, progress));
         preferences.edit()
                 .putInt(KEY_VERSION, VERSION)
                 .putInt(KEY_WIDTH, calibration.imageWidth())
@@ -55,6 +90,17 @@ public final class CalibrationStore {
                 .putLong(KEY_PRINCIPAL_Y, Double.doubleToRawLongBits(
                         calibration.principalPointYNormalized()))
                 .putLong(KEY_PITCH, Double.doubleToRawLongBits(calibration.pitchDegrees()))
+                .putString(KEY_STATUS, targetStatus.name())
+                .putInt(KEY_PROGRESS, clampedProgress)
+                .apply();
+    }
+
+    public void saveStatus(Status status, int progress) {
+        Status targetStatus = status == null ? Status.UNCONFIGURED : status;
+        int clampedProgress = Math.max(0, Math.min(100, progress));
+        preferences.edit()
+                .putString(KEY_STATUS, targetStatus.name())
+                .putInt(KEY_PROGRESS, clampedProgress)
                 .apply();
     }
 

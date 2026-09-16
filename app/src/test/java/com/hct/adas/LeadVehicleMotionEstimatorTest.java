@@ -41,6 +41,17 @@ public final class LeadVehicleMotionEstimatorTest {
         assertTrue(!invalid.visible());
     }
 
+    @Test
+    public void rejectsBoundingBoxClippedByImageBorder() {
+        LeadVehicleMotionEstimator estimator = new LeadVehicleMotionEstimator();
+        VehicleDetector.Detection clipped = new VehicleDetector.Detection(
+                "car", 0.9f, 0.40f, 0.70f, 0.60f, 1.0f);
+        LeadVehicleTracker.Snapshot snapshot = new LeadVehicleTracker.Snapshot(
+                1L, LeadVehicleTracker.State.TRACKING, 1L, clipped);
+
+        assertTrue(!estimator.update(snapshot, CALIBRATION, 1280, 720).visible());
+    }
+
     private static LeadVehicleTracker.Snapshot snapshot(long id, float bottom, long millis) {
         VehicleDetector.Detection box = new VehicleDetector.Detection(
                 "car", 0.9f, 0.40f, bottom - 0.2f, 0.60f, bottom);

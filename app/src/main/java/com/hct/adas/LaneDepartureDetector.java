@@ -1,7 +1,13 @@
 package com.hct.adas;
 
-/** Small Y-plane lane cue extractor; absence of both reliable sides is an explicit no-result. */
+/**
+ * Y-plane lane marking and departure extractor using bright ridge (2nd derivative) filtering.
+ * ROIs are elevated above the vehicle hood line to ensure clear road pavement visibility.
+ */
 public final class LaneDepartureDetector {
+    public static final double Y_TOP = 0.60;
+    public static final double Y_BOTTOM = 0.78;
+
     public record Observation(double centerOffset, double confidence, boolean available,
                               double leftTopX, double rightTopX,
                               double leftBottomX, double rightBottomX) { }
@@ -17,21 +23,43 @@ public final class LaneDepartureDetector {
                 || nv21.length != (long) width * height * 3 / 2) {
             return unavailable();
         }
-        double leftTop = findBrightEdge(nv21, width, height, 0.08, 0.46, 0.58, 0.72);
-        double rightTop = findBrightEdge(nv21, width, height, 0.54, 0.92, 0.58, 0.72);
-        double leftBottom = findBrightEdge(nv21, width, height, 0.08, 0.46, 0.78, 0.94);
-        double rightBottom = findBrightEdge(nv21, width, height, 0.54, 0.92, 0.78, 0.94);
-        if (!finite(leftTop) || !finite(rightTop) || !finite(leftBottom)
-                || !finite(rightBottom) || rightBottom - leftBottom < 0.20
-                || rightTop - leftTop < 0.12) {
+
+        // Elevated bands: Top band [0.54, 0.66], Bottom band [0.72, 0.84] - strictly above hood.
+        double leftTop = findBrightLine(nv21, width, height, 0.06, 0.46, 0.54, 0.66);
+        double rightTop = findBrightLine(nv21, width, height, 0.54, 0.94, 0.54, 0.66);
+        double leftBottom = findBrightLine(nv21, width, height, 0.04, 0.46, 0.72, 0.84);
+        double rightBottom = findBrightLine(nv21, width, height, 0.54, 0.96, 0.72, 0.84);
+
+        if (!finite(leftTop) || !finite(rightTop) || !finite(leftBottom) || !finite(rightBottom)) {
             return unavailable();
         }
-        double confidence = Math.min(Math.min(edgeConfidence(nv21, width, height, leftTop, 0.65),
-                edgeConfidence(nv21, width, height, rightTop, 0.65)),
-                Math.min(edgeConfidence(nv21, width, height, leftBottom, 0.86),
-                        edgeConfidence(nv21, width, height, rightBottom, 0.86)));
-        Observation current = new Observation((leftBottom + rightBottom) * 0.5 - 0.5,
-                confidence, confidence >= 0.35, leftTop, rightTop, leftBottom, rightBottom);
+
+        double widthTop = rightTop - leftTop;
+        double widthBottom = rightBottom - leftBottom;
+
+        // Perspective sanity check: bottom lane must be wider than top lane.
+        if (widthBottom < 0.18 || widthTop < 0.08 || widthBottom <= widthTop + 0.02) {
+            return unavailable();
+        }
+
+        double cLeftTop = lineConfidence(nv21, width, height, leftTop, Y_TOP);
+        double cRightTop = lineConfidence(nv21, width, height, rightTop, Y_TOP);
+        double cLeftBottom = lineConfidence(nv21, width, height, leftBottom, Y_BOTTOM);
+        double cRightBottom = lineConfidence(nv21, width, height, rightBottom, Y_BOTTOM);
+
+        double confLeft = (cLeftTop + cLeftBottom) * 0.5;
+        double confRight = (cRightTop + cRightBottom) * 0.5;
+        double confidence = (confLeft + confRight) * 0.5;
+
+        // A strong response on one side must not hide a missing or noisy opposite line.
+        boolean available = cLeftTop >= 0.25 && cLeftBottom >= 0.25
+                && cRightTop >= 0.25 && cRightBottom >= 0.25
+                && confidence >= 0.35;
+        double centerOffset = (leftBottom + rightBottom) * 0.5 - 0.5;
+
+        Observation current = new Observation(centerOffset, confidence, available,
+                leftTop, rightTop, leftBottom, rightBottom);
+
         if (last != null && last.available() && current.available()) {
             current = blend(last, current, 0.35);
         }
@@ -39,44 +67,64 @@ public final class LaneDepartureDetector {
         return current;
     }
 
-    private static double findBrightEdge(byte[] nv21, int width, int height,
+    private static double findBrightLine(byte[] nv21, int width, int height,
                                          double minX, double maxX,
                                          double minY, double maxY) {
         double weightedX = 0.0;
-        double weight = 0.0;
+        double totalWeight = 0.0;
         int yStart = (int) (height * minY);
         int yEnd = (int) (height * maxY);
-        for (int y = yStart; y <= yEnd; y += Math.max(1, height / 90)) {
-            int start = Math.max(2, (int) (width * minX));
-            int end = Math.min(width - 3, (int) (width * maxX));
-            double bestGradient = 18.0;
+        int delta = Math.max(3, (int) (width * 0.006)); // ~4-8 pixels span
+        int stepY = Math.max(1, (yEnd - yStart) / 10);
+
+        for (int y = yStart; y <= yEnd; y += stepY) {
+            int startX = Math.max(delta + 1, (int) (width * minX));
+            int endX = Math.min(width - delta - 2, (int) (width * maxX));
             int bestX = -1;
-            for (int x = start; x <= end; x += 2) {
-                int gradient = luma(nv21, width, x + 1, y) - luma(nv21, width, x - 2, y);
-                if (gradient > bestGradient) {
-                    bestGradient = gradient;
+            int bestRidge = 14; // Minimum ridge intensity threshold
+
+            for (int x = startX; x <= endX; x += 2) {
+                int center = luma(nv21, width, x, y);
+                int left = luma(nv21, width, x - delta, y);
+                int right = luma(nv21, width, x + delta, y);
+                // Second derivative ridge response: positive on bright stripe between darker asphalt
+                int ridge = (center * 2) - left - right;
+                if (ridge > bestRidge) {
+                    bestRidge = ridge;
                     bestX = x;
                 }
             }
+
             if (bestX >= 0) {
-                weightedX += (double) bestX / width * bestGradient;
-                weight += bestGradient;
+                weightedX += (double) bestX / width * bestRidge;
+                totalWeight += bestRidge;
             }
         }
-        return weight > 0.0 ? weightedX / weight : Double.NaN;
+        return totalWeight > 0.0 ? weightedX / totalWeight : Double.NaN;
     }
 
-    private static double edgeConfidence(byte[] nv21, int width, int height, double x, double yRatio) {
-        int y = (int) (height * yRatio);
-        int px = Math.max(2, Math.min(width - 3, (int) (x * width)));
-        return Math.min(1.0, Math.max(0.0,
-                (luma(nv21, width, px + 1, y) - luma(nv21, width, px - 2, y)) / 80.0));
+    private static double lineConfidence(byte[] nv21, int width, int height, double normX, double normY) {
+        if (!Double.isFinite(normX) || normX <= 0.0 || normX >= 1.0) {
+            return 0.0;
+        }
+        int y = (int) (height * normY);
+        int x = (int) (width * normX);
+        int delta = Math.max(3, (int) (width * 0.006));
+        if (x <= delta || x >= width - delta - 1) {
+            return 0.0;
+        }
+        int center = luma(nv21, width, x, y);
+        int left = luma(nv21, width, x - delta, y);
+        int right = luma(nv21, width, x + delta, y);
+        int ridge = (center * 2) - left - right;
+        return Math.min(1.0, Math.max(0.0, (ridge - 10.0) / 60.0));
     }
 
     private static Observation blend(Observation previous, Observation current, double alpha) {
         return new Observation(
                 lerp(previous.centerOffset(), current.centerOffset(), alpha),
-                lerp(previous.confidence(), current.confidence(), alpha), true,
+                lerp(previous.confidence(), current.confidence(), alpha),
+                current.available(),
                 lerp(previous.leftTopX(), current.leftTopX(), alpha),
                 lerp(previous.rightTopX(), current.rightTopX(), alpha),
                 lerp(previous.leftBottomX(), current.leftBottomX(), alpha),

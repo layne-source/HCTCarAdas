@@ -12,12 +12,17 @@ import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.TextureView;
 import android.widget.TextView;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.text.InputType;
+import android.view.View;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.Toast;
 
 import java.io.IOException;
@@ -26,7 +31,7 @@ import java.util.Set;
 
 /** Foreground vehicle detection/tracking; calibrated warnings are a later stage. */
 public final class MainActivity extends Activity {
-    private static final String TAG = "HctAdasDetector";
+    private static final String TAG = "HctAdasCore";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
     private FrameDispatcher frameDispatcher;
@@ -39,6 +44,16 @@ public final class MainActivity extends Activity {
     private TextView calibrationView;
     private CalibrationStore calibrationStore;
     private volatile CameraCalibration calibration;
+    private final AutoCalibrationLearner autoCalibrationLearner = new AutoCalibrationLearner();
+    private volatile CalibrationStore.Status calibrationStatus = CalibrationStore.Status.UNCONFIGURED;
+    private volatile int calibrationProgress = 0;
+    private TextView simulationButton;
+    private final AdasSimulator simulator = new AdasSimulator();
+    private SimulationSnapshot simulationSnapshot;
+    private final LeadVehicleTracker tracker = new LeadVehicleTracker();
+    private final LeadVehicleMotionEstimator motionEstimator = new LeadVehicleMotionEstimator();
+    private final LaneDepartureDetector laneDetector = new LaneDepartureDetector();
+    private final AdasDecisionEngine decisionEngine = new AdasDecisionEngine();
     private AlertAudio alertAudio;
     private LocationManager locationManager;
     private volatile double egoSpeedKmh = Double.NaN;
@@ -47,17 +62,25 @@ public final class MainActivity extends Activity {
     private boolean locationPermissionAsked;
     private volatile boolean started;
     private volatile long acceptFramesAfterNanos;
+    private volatile long resultsGeneration;
     private record Analysis(VehicleDetector.Result detections, LeadVehicleTracker.Snapshot tracking,
                             LeadVehicleMotionEstimator.Measurement motion,
                             LaneDepartureDetector.Observation lane,
-                            AdasDecisionEngine.Decision decision) { }
+                            AdasDecisionEngine.Decision decision, double speedKmh) { }
 
+    private long lastHeartbeatLogNanos;
+    private LeadVehicleTracker.State previousTrackingState = LeadVehicleTracker.State.NONE;
+    private long previousTargetId = 0L;
+    private long previousDecisionTargetId;
     private volatile Analysis latestAnalysis;
     private volatile Set<AdasDecisionEngine.Alert> heldAlerts = Set.of();
     private volatile long alertsHoldUntilNanos;
     private long previousCaptured;
     private long previousMetricsTime;
+    private long previousProcessedTimestampNanos;
     private final Handler metricsHandler = new Handler(Looper.getMainLooper());
+    private record SimulationSnapshot(CameraCalibration calibration,
+                                      CalibrationStore.Status status) { }
     private final Runnable metricsUpdater = new Runnable() {
         @Override
         public void run() {
@@ -75,12 +98,27 @@ public final class MainActivity extends Activity {
         statusView = findViewById(R.id.status);
         metricsView = findViewById(R.id.metrics);
         calibrationView = findViewById(R.id.calibration);
+        simulationButton = findViewById(R.id.simulation_button);
+        if (!BuildConfig.DEBUG) {
+            simulationButton.setVisibility(View.GONE);
+        }
         previewView = findViewById(R.id.usb_preview);
         overlayView = findViewById(R.id.vehicle_overlay);
         calibrationStore = new CalibrationStore(this);
         calibration = calibrationStore.load();
-        overlayView.setCalibration(calibration);
+        calibrationStatus = calibrationStore.loadStatus();
+        calibrationProgress = calibrationStore.loadProgress();
+        autoCalibrationLearner.reset(calibrationStatus);
+        // The learner keeps an in-memory sample window. A process restart cannot
+        // resume that window, so never present persisted CALIBRATING progress as
+        // if those samples were still available.
+        if (calibrationStatus == CalibrationStore.Status.CALIBRATING) {
+            calibrationProgress = 0;
+            calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
+        }
+        overlayView.setCalibration(calibration, calibrationStatus);
         calibrationView.setOnClickListener(view -> showCalibrationDialog());
+        simulationButton.setOnClickListener(view -> showSimulationDialog());
         locationManager = getSystemService(LocationManager.class);
         try {
             alertAudio = new AlertAudio(this);
@@ -91,33 +129,32 @@ public final class MainActivity extends Activity {
             if (started && checkSelfPermission(Manifest.permission.CAMERA)
                     != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[] {Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
+            } else if (started) {
+                cameraSource.retryOpen();
             }
         });
         frameDispatcher = new FrameDispatcher(2);
         frameConsumer = new FrameConsumer(frameDispatcher, new FrameConsumer.Handler() {
             private VehicleDetector detector;
             private RuntimeException initializationFailure;
-            private final LeadVehicleTracker tracker = new LeadVehicleTracker();
-            private final LeadVehicleMotionEstimator motionEstimator = new LeadVehicleMotionEstimator();
-            private final LaneDepartureDetector laneDetector = new LaneDepartureDetector();
-            private final AdasDecisionEngine decisionEngine = new AdasDecisionEngine();
-            private long trackingSessionStart;
+            private long nextDetectorRetryNanos;
 
             @Override
             public void onFrame(FrameDispatcher.Frame frame) {
-                long sessionStart = acceptFramesAfterNanos;
-                if (!started || frame.timestampNanos() < sessionStart) {
-                    return;
-                }
-                if (trackingSessionStart != sessionStart) {
-                    tracker.reset();
-                    motionEstimator.reset();
-                    laneDetector.reset();
-                    decisionEngine.reset();
-                    trackingSessionStart = sessionStart;
+                long sessionStart;
+                long frameGeneration;
+                synchronized (MainActivity.this) {
+                    sessionStart = acceptFramesAfterNanos;
+                    frameGeneration = resultsGeneration;
+                    if (!started || frame.timestampNanos() < sessionStart || simulationSnapshot != null) {
+                        return;
+                    }
                 }
                 if (initializationFailure != null) {
-                    throw initializationFailure;
+                    if (System.nanoTime() < nextDetectorRetryNanos) {
+                        throw initializationFailure;
+                    }
+                    initializationFailure = null;
                 }
                 if (detector == null) {
                     try {
@@ -126,41 +163,35 @@ public final class MainActivity extends Activity {
                         Log.e(TAG, "Vehicle model initialization failed", failure);
                         initializationFailure = new IllegalStateException(
                                 "模型加载失败: " + failure.getMessage(), failure);
+                        nextDetectorRetryNanos = System.nanoTime() + 5_000_000_000L;
                         throw initializationFailure;
                     }
                 }
                 VehicleDetector.Result result = detector.detect(frame);
-                if (started && sessionStart == acceptFramesAfterNanos) {
-                    if (System.nanoTime() - result.timestampNanos()
-                            > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
-                        tracker.reset();
-                        latestAnalysis = null;
+                // Keep inference outside the lock; transitions and the short analysis stage
+                // share one lock so an old frame cannot mutate a new session's state.
+                synchronized (MainActivity.this) {
+                    if (!started || sessionStart != acceptFramesAfterNanos
+                            || frameGeneration != resultsGeneration || simulationSnapshot != null) {
                         return;
                     }
-                    LeadVehicleTracker.Snapshot tracking = tracker.update(result);
-                    LeadVehicleMotionEstimator.Measurement motion = motionEstimator.update(
-                            tracking, calibration, result.frameWidth(), result.frameHeight());
+                    if (System.nanoTime() - result.timestampNanos()
+                            > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
+                        resetAnalysisState();
+                        return;
+                    }
+                    if (result.timestampNanos() <= previousProcessedTimestampNanos) {
+                        return;
+                    }
+                    if (previousProcessedTimestampNanos > 0L
+                            && result.timestampNanos() - previousProcessedTimestampNanos
+                            > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
+                        resetAnalysisState();
+                    }
                     LaneDepartureDetector.Observation lane = laneDetector.detect(
                             frame.nv21(), frame.width(), frame.height());
                     double speed = validSpeedKmh() ? egoSpeedKmh : Double.NaN;
-                    AdasDecisionEngine.Observation observation = new AdasDecisionEngine.Observation(
-                            result.timestampNanos() / 1_000_000L, speed,
-                            motion.distanceMeters(), motion.closingSpeedMps(),
-                            motion.targetAreaPixels(), motion.visible());
-                    AdasDecisionEngine.Decision decision = decisionEngine.update(observation,
-                            new AdasDecisionEngine.LaneObservation(lane.centerOffset(),
-                                    lane.confidence(), lane.available()));
-                    if (!decision.events().isEmpty()) {
-                        heldAlerts = decision.events();
-                        alertsHoldUntilNanos = System.nanoTime() + 1_500_000_000L;
-                    }
-                    if (started && sessionStart == acceptFramesAfterNanos && alertAudio != null) {
-                        alertAudio.play(decision.events());
-                    }
-                    if (started && sessionStart == acceptFramesAfterNanos) {
-                        // One publication keeps target ID and boxes from the same frame together.
-                        latestAnalysis = new Analysis(result, tracking, motion, lane, decision);
-                    }
+                    processAdasFrame(result, lane, speed, frameGeneration, sessionStart, false);
                 }
             }
 
@@ -173,8 +204,7 @@ public final class MainActivity extends Activity {
                 } finally {
                     detector = null;
                     initializationFailure = null;
-                    tracker.reset();
-                    laneDetector.reset();
+                    nextDetectorRetryNanos = 0L;
                 }
             }
         });
@@ -196,7 +226,7 @@ public final class MainActivity extends Activity {
 
                     public void onError(String message) {
                         clearResults();
-                        statusView.setText(message);
+                        statusView.setText(message + "\n点击此处重试");
                     }
                 });
         previewView.addOnLayoutChangeListener((view, l, t, r, b, oldL, oldT, oldR, oldB) -> {
@@ -210,8 +240,10 @@ public final class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
-        started = true;
-        clearResults();
+        synchronized (this) {
+            started = true;
+            clearResults();
+        }
         statusView.setText(R.string.app_bootstrap_status);
         previousMetricsTime = System.nanoTime();
         previousCaptured = cameraSource.capturedFrames();
@@ -258,6 +290,33 @@ public final class MainActivity extends Activity {
 
     private void renderMetrics() {
         long now = System.nanoTime();
+        if (now - lastHeartbeatLogNanos >= 1_000_000_000L) {
+            lastHeartbeatLogNanos = now;
+            Analysis heartbeat = latestAnalysis;
+            CameraCalibration heartbeatCalibration = calibration;
+            String calibDesc = (heartbeatCalibration == null) ? "UNSET"
+                    : String.format(Locale.ROOT, "%s(H=%.2fm, pitch=%.1f°)",
+                            calibrationStatus.name(), heartbeatCalibration.cameraHeightMeters(), heartbeatCalibration.pitchDegrees());
+            String targetDesc = (heartbeat != null && heartbeat.tracking() != null && heartbeat.motion() != null && heartbeat.motion().visible())
+                    ? String.format(Locale.ROOT, "#%d(D=%.1fm, vc=%.1fm/s, TTC=%s)",
+                            heartbeat.tracking().trackId(), heartbeat.motion().distanceMeters(),
+                            heartbeat.motion().closingSpeedMps(),
+                            heartbeat.motion().closingSpeedMps() > 0 ? String.format(Locale.ROOT, "%.1fs", heartbeat.motion().distanceMeters() / heartbeat.motion().closingSpeedMps()) : "--")
+                    : "NONE";
+            String laneDesc = (heartbeat != null && heartbeat.lane() != null && heartbeat.lane().available())
+                    ? String.format(Locale.ROOT, "offset=%.2f, conf=%.2f", heartbeat.lane().centerOffset(), heartbeat.lane().confidence())
+                    : "UNAVAILABLE";
+            String speedDesc = validSpeedKmh() ? String.format(Locale.ROOT, "%.1f km/h", egoSpeedKmh) : "NO_GPS";
+            String eventDesc = (heartbeat != null && !heartbeat.decision().events().isEmpty())
+                    ? heartbeat.decision().events().toString() : "NONE";
+            long capturedFramesCount = cameraSource.capturedFrames();
+            double currentFps = (capturedFramesCount - previousCaptured) * 1_000_000_000.0
+                    / Math.max(1L, now - previousMetricsTime);
+
+            Log.i(TAG, String.format(Locale.ROOT,
+                    "[HEARTBEAT] FPS=%.1f | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
+                    currentFps, speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
+        }
         long captured = cameraSource.capturedFrames();
         double fps = (captured - previousCaptured) * 1_000_000_000.0
                 / Math.max(1L, now - previousMetricsTime);
@@ -268,18 +327,27 @@ public final class MainActivity extends Activity {
         String stream = getString(R.string.stream_metrics, fps, queue.offeredFrames(),
                 worker.processedFrames(), queue.droppedFrames(),
                 worker.failedFrames() + cameraSource.invalidFrames());
+        AlertAudio.Status audioStatus = alertAudio == null ? AlertAudio.Status.UNAVAILABLE : alertAudio.status();
+        stream += switch (audioStatus) {
+            case READY -> "";
+            case LOADING -> "\n报警音正在加载";
+            case UNAVAILABLE -> "\n报警音不可用，请检查车机音频通道";
+            case MUTED -> "\n媒体音量已静音，声音预警不可用";
+        };
         Analysis analysis = latestAnalysis;
         VehicleDetector.Result result = analysis == null ? null : analysis.detections();
         updateCalibrationStatus(result);
-        boolean fresh = result != null && result.timestampNanos() >= acceptFramesAfterNanos
-                && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS;
+        boolean fresh = result != null && (simulator.isRunning()
+                || (result.timestampNanos() >= acceptFramesAfterNanos
+                && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
         if (!worker.lastError().isEmpty()) {
             metricsView.setText(stream + "\n" + worker.lastError());
             overlayView.setResult(null, null);
         } else if (fresh) {
             fitPreview(result);
             overlayView.setResult(result, analysis.tracking(), analysis.lane(),
-                    displayDecision(analysis, now));
+                    displayDecision(analysis, now), analysis.motion().visible(),
+                    Double.isFinite(displaySpeedKmh(analysis)));
             metricsView.setText(stream + "\n" + getString(R.string.detection_metrics,
                     result.vehicles().size(), result.inferenceNanos() / 1_000_000.0)
                     + "\n" + trackingStatus(analysis.tracking())
@@ -307,10 +375,18 @@ public final class MainActivity extends Activity {
 
     private String measurementStatus(Analysis analysis, long now) {
         LeadVehicleMotionEstimator.Measurement motion = analysis.motion();
+        double speed = displaySpeedKmh(analysis);
         String lane = analysis.lane().available()
-                ? (displayDecision(analysis, now).laneWarning() ? "车道注意" : "车道正常") : "车道不可用";
+                ? (!Double.isFinite(speed) ? "车道已识别，LDW等待有效车速"
+                : displayDecision(analysis, now).laneWarning() ? "车道注意" : "车道已识别") : "车道不可用";
+        String speedText = Double.isFinite(speed)
+                ? String.format(Locale.ROOT, "车速 %.0f km/h", speed)
+                : "车速 -- (GPS无效或过期)";
         if (!motion.visible()) {
-            return getString(R.string.measurement_unavailable) + " · " + lane;
+            String availability = calibrationStatus == CalibrationStore.Status.CALIBRATED
+                    ? getString(R.string.measurement_unavailable)
+                    : getString(R.string.measurement_calibration_pending);
+            return availability + " · " + speedText + " · " + lane;
         }
         double ttc = motion.closingSpeedMps() > 0.0
                 ? motion.distanceMeters() / motion.closingSpeedMps() : Double.NaN;
@@ -322,12 +398,20 @@ public final class MainActivity extends Activity {
                 ? (shown.headwayWarning() ? "HMW 条件" : "无预警")
                 : "事件: " + shown.events();
         String laneWarning = shown.laneWarning() ? " · LDW 条件" : "";
+        String risk = !Double.isFinite(speed) && !shown.headwayWarning()
+                ? "预警受限" : riskStatus(shown);
         return getString(R.string.measurement_status, distance, ttcText,
-                riskStatus(shown) + " · " + warning + laneWarning + " · " + lane);
+                risk + " · " + speedText + " · " + warning + laneWarning + " · " + lane);
     }
 
+    private double displaySpeedKmh(Analysis analysis) {
+        return simulator.isRunning() ? analysis.speedKmh()
+                : validSpeedKmh() && Double.isFinite(analysis.speedKmh()) ? egoSpeedKmh : Double.NaN;
+    }
     private String riskStatus(AdasDecisionEngine.Decision decision) {
-        if (decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
+        if (decision.collisionDanger() || decision.headwayCritical()
+                || decision.events().contains(AdasDecisionEngine.Alert.FCW)
+                || decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
             return "危险";
         }
         if (decision.headwayWarning() || decision.laneWarning()) {
@@ -339,17 +423,20 @@ public final class MainActivity extends Activity {
     private AdasDecisionEngine.Decision displayDecision(Analysis analysis, long now) {
         if (now < alertsHoldUntilNanos && !heldAlerts.isEmpty()) {
             return new AdasDecisionEngine.Decision(heldAlerts,
-                    analysis.decision().headwayWarning(), analysis.decision().laneWarning());
+                    analysis.decision().headwayWarning(),
+                    analysis.decision().headwayCritical(),
+                    analysis.decision().collisionDanger(),
+                    analysis.decision().laneWarning());
         }
         return analysis.decision();
     }
 
     private boolean validSpeedKmh() {
         return Double.isFinite(egoSpeedKmh) && speedTimestampNanos > 0L
-                && System.nanoTime() - speedTimestampNanos <= 2_000_000_000L;
+                && SystemClock.elapsedRealtimeNanos() - speedTimestampNanos <= 2_000_000_000L;
     }
 
-    private void startLocationUpdates() {
+    private synchronized void startLocationUpdates() {
         egoSpeedKmh = Double.NaN;
         speedTimestampNanos = 0L;
         if (locationManager == null || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -357,10 +444,29 @@ public final class MainActivity extends Activity {
             return;
         }
         try {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f,
-                    locationListener, Looper.getMainLooper());
+            boolean requested = false;
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f,
+                        locationListener, Looper.getMainLooper());
+                requested = true;
+            }
+            if (locationManager.isProviderEnabled(LocationManager.FUSED_PROVIDER)) {
+                locationManager.requestLocationUpdates(LocationManager.FUSED_PROVIDER, 500L, 0f,
+                        locationListener, Looper.getMainLooper());
+                requested = true;
+            }
+            if (!requested) {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f,
+                        locationListener, Looper.getMainLooper());
+            }
+
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            if (last != null) {
+            if (last == null) {
+                last = locationManager.getLastKnownLocation(LocationManager.FUSED_PROVIDER);
+            }
+            // Stale check: strictly reject cached location older than 2.0 seconds
+            if (last != null && (SystemClock.elapsedRealtimeNanos() - last.getElapsedRealtimeNanos())
+                    <= 2_000_000_000L) {
                 locationListener.onLocationChanged(last);
             }
         } catch (RuntimeException failure) {
@@ -369,7 +475,7 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void stopLocationUpdates() {
+    private synchronized void stopLocationUpdates() {
         if (locationManager != null) {
             try {
                 locationManager.removeUpdates(locationListener);
@@ -384,66 +490,408 @@ public final class MainActivity extends Activity {
     private final LocationListener locationListener = new LocationListener() {
         @Override
         public void onLocationChanged(Location location) {
-            if (location != null && location.hasSpeed() && Float.isFinite(location.getSpeed())) {
-                egoSpeedKmh = Math.max(0.0, location.getSpeed() * 3.6);
-                speedTimestampNanos = System.nanoTime();
+            synchronized (MainActivity.this) {
+                if (!started || location == null || !location.hasSpeed()
+                        || !Float.isFinite(location.getSpeed()) || location.getSpeed() < 0f) {
+                    return;
+                }
+                long measuredAt = location.getElapsedRealtimeNanos();
+                long now = SystemClock.elapsedRealtimeNanos();
+                if (measuredAt <= speedTimestampNanos || measuredAt > now
+                        || now - measuredAt > 2_000_000_000L) {
+                    return;
+                }
+                double prevSpeed = egoSpeedKmh;
+                egoSpeedKmh = location.getSpeed() * 3.6;
+                speedTimestampNanos = measuredAt;
+                if (!Double.isFinite(prevSpeed)) {
+                    Log.i(TAG, String.format(Locale.ROOT, "[GPS] First speed fix received: %.1f km/h (provider=%s)",
+                            egoSpeedKmh, location.getProvider()));
+                }
             }
         }
     };
 
     private void updateCalibrationStatus(VehicleDetector.Result result) {
-        if (calibration == null) {
+        if (calibration == null || calibrationStatus == CalibrationStore.Status.UNCONFIGURED) {
             calibrationView.setText(R.string.calibration_unset);
+            calibrationView.setTextColor(0xFFFFD180);
         } else if (result != null && !calibration.isUsableFor(result.frameWidth(), result.frameHeight())) {
             calibrationView.setText(getString(R.string.calibration_size_mismatch,
                     calibration.imageWidth(), calibration.imageHeight()));
-        } else {
+            calibrationView.setTextColor(0xFFFF8A80);
+        } else if (calibrationStatus == CalibrationStore.Status.WIZARD_COMPLETED) {
+            calibrationView.setText(getString(R.string.calibration_wizard_done,
+                    calibration.cameraHeightMeters()));
+            calibrationView.setTextColor(0xFF80DEEA);
+        } else if (calibrationStatus == CalibrationStore.Status.CALIBRATING) {
+            calibrationView.setText(getString(R.string.calibration_in_progress,
+                    calibrationProgress));
+            calibrationView.setTextColor(0xFF80DEEA);
+        } else if (calibrationStatus == CalibrationStore.Status.CALIBRATED) {
             calibrationView.setText(getString(R.string.calibration_loaded,
-                    calibration.imageWidth(), calibration.imageHeight()));
+                    calibration.imageWidth(), calibration.imageHeight(),
+                    calibration.cameraHeightMeters(), calibration.pitchDegrees()));
+            calibrationView.setTextColor(0xFFA5D6A7);
         }
     }
 
+    private synchronized void processAdasFrame(VehicleDetector.Result result,
+                                               LaneDepartureDetector.Observation lane,
+                                               double speed,
+                                               long frameGeneration,
+                                               long frameSessionStart,
+                                               boolean simulationFrame) {
+        if (!started || simulationFrame != simulator.isRunning()
+                || simulationFrame != (simulationSnapshot != null)
+                || frameGeneration != resultsGeneration
+                || frameSessionStart != acceptFramesAfterNanos) {
+            return;
+        }
+        if (!simulationFrame && System.nanoTime() - result.timestampNanos()
+                > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
+            resetAnalysisState();
+            return;
+        }
+        if (result.timestampNanos() <= previousProcessedTimestampNanos) {
+            return;
+        }
+        previousProcessedTimestampNanos = result.timestampNanos();
+        LeadVehicleTracker.Snapshot tracking = tracker.update(result);
+        CameraCalibration activeCalib = calibrationStatus == CalibrationStore.Status.CALIBRATED
+                ? calibration : null;
+        boolean persistCalibration = !simulationFrame;
+        CameraCalibration learningCalibration = calibration;
+        if (learningCalibration != null
+                && (!simulationFrame || simulator.currentScenario() == AdasSimulator.Scenario.AUTO_CALIBRATION)
+                && learningCalibration.isUsableFor(result.frameWidth(), result.frameHeight())) {
+            AutoCalibrationLearner.StepResult step = autoCalibrationLearner.update(
+                    lane, speed, learningCalibration);
+            if (step.calibrationUpdated()) {
+                calibration = step.calibration();
+                calibrationStatus = step.status();
+                calibrationProgress = step.progressPercent();
+                activeCalib = step.status() == CalibrationStore.Status.CALIBRATED
+                        ? step.calibration() : null;
+                if (persistCalibration) {
+                    calibrationStore.save(step.calibration(), step.status(), step.progressPercent());
+                }
+                postCalibrationOverlay(frameGeneration);
+            } else if (step.status() != calibrationStatus || step.progressPercent() != calibrationProgress) {
+                calibrationStatus = step.status();
+                calibrationProgress = step.progressPercent();
+                if (persistCalibration) {
+                    calibrationStore.saveStatus(step.status(), step.progressPercent());
+                }
+                postCalibrationOverlay(frameGeneration);
+            }
+        }
+        LeadVehicleMotionEstimator.Measurement motion = motionEstimator.update(
+                tracking, activeCalib, result.frameWidth(), result.frameHeight());
+
+        long decisionTargetId = tracking.state() == LeadVehicleTracker.State.TRACKING
+                ? tracking.trackId() : 0L;
+        if (decisionTargetId != previousDecisionTargetId) {
+            decisionEngine.resetTargetState();
+            previousDecisionTargetId = decisionTargetId;
+        }
+        double decisionDistance = motion.distanceMeters();
+        AdasDecisionEngine.Observation observation = new AdasDecisionEngine.Observation(
+                result.timestampNanos() / 1_000_000L, speed,
+                decisionDistance, motion.closingSpeedMps(),
+                motion.targetAreaPixels(), motion.visible());
+        AdasDecisionEngine.Decision decision = decisionEngine.update(observation,
+                new AdasDecisionEngine.LaneObservation(lane.centerOffset(),
+                        lane.confidence(), lane.available()));
+        if (!decision.events().isEmpty()) {
+            heldAlerts = decision.events();
+            alertsHoldUntilNanos = System.nanoTime() + 1_500_000_000L;
+            for (AdasDecisionEngine.Alert alert : decision.events()) {
+                Log.w(TAG, String.format(Locale.ROOT,
+                        "[ALERT-TRIGGER] >>> %s <<< | Dist=%.1fm | ClosingSpeed=%.1fm/s | EgoSpeed=%.1f km/h | Target=#%d",
+                        alert.name(), motion.distanceMeters(), motion.closingSpeedMps(),
+                        speed, tracking.trackId()));
+            }
+        }
+        if (tracking.state() != previousTrackingState || tracking.trackId() != previousTargetId) {
+            Log.i(TAG, String.format(Locale.ROOT,
+                    "[TRACKER] Target transition: %s(#%d) -> %s(#%d)",
+                    previousTrackingState, previousTargetId, tracking.state(), tracking.trackId()));
+            previousTrackingState = tracking.state();
+            previousTargetId = tracking.trackId();
+        }
+        if (alertAudio != null) {
+            alertAudio.play(decision.events());
+        }
+        latestAnalysis = new Analysis(result, tracking, motion, lane, decision, speed);
+    }
+
+    private void postCalibrationOverlay(long frameGeneration) {
+        runOnUiThread(() -> {
+            synchronized (MainActivity.this) {
+                if (started && frameGeneration == resultsGeneration) {
+                    overlayView.setCalibration(calibration, calibrationStatus);
+                }
+            }
+        });
+    }
+
+    private synchronized void showSimulationDialog() {
+        if (!BuildConfig.DEBUG) {
+            return;
+        }
+        if (simulator.isRunning()) {
+            simulator.stop();
+            restoreSimulationState();
+            simulationButton.setText("室内模拟测试");
+            simulationButton.setBackgroundColor(0xB30D47A1);
+            statusView.setText(R.string.app_bootstrap_status);
+            Toast.makeText(this, "已停止模拟测试，恢复正常监测", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String[] scenarioNames = {
+                "🔊 扬声器发声测试 (测试车机喇叭通路)",
+                "1. FCW 紧急碰撞测试 (60km/h 高速前车急刹/逼近)",
+                "2. HMW 极近车距测试 (25km/h 跟车贴近至 3.5m 报警)",
+                "3. LDW 车道偏离测试 (65km/h 车辆压线偏离报警)",
+                "4. LVSA 前车起步测试 (红灯静止等候 / 前车起步驶离)",
+                "5. 行车自标定收敛测试 (自动学习灭点 0% -> 100%)"
+        };
+        AdasSimulator.Scenario[] scenarios = {
+                AdasSimulator.Scenario.FCW_APPROACH,
+                AdasSimulator.Scenario.HMW_PROXIMITY,
+                AdasSimulator.Scenario.LDW_DEPARTURE,
+                AdasSimulator.Scenario.LVSA_START,
+                AdasSimulator.Scenario.AUTO_CALIBRATION
+        };
+
+        new AlertDialog.Builder(this)
+                .setTitle("室内 ADAS 场景模拟测试")
+                .setItems(scenarioNames, (dialog, which) -> {
+                    if (which == 0) {
+                        if (alertAudio != null) {
+                            boolean played = alertAudio.testSound();
+                            Toast.makeText(this, played
+                                    ? "已请求播放测试音，请确认扬声器实际出声"
+                                    : "测试音播放失败，请检查媒体音量和音频通道", Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(this, "报警音不可用，请检查音频通道", Toast.LENGTH_SHORT).show();
+                        }
+                    } else {
+                        startSimulation(scenarios[which - 1]);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+    private synchronized void startSimulation(AdasSimulator.Scenario scenario) {
+        if (!BuildConfig.DEBUG || !started) {
+            return;
+        }
+        Analysis analysis = latestAnalysis;
+        int width = analysis == null ? 1280 : analysis.detections().frameWidth();
+        int height = analysis == null ? 720 : analysis.detections().frameHeight();
+
+        if (simulationSnapshot == null) {
+            simulationSnapshot = new SimulationSnapshot(calibration, calibrationStatus);
+        }
+        // Synthetic boxes use this fixture, independent of the real camera's saved calibration.
+        calibration = CameraCalibration.fromWizard(width, height, 1.25, 90.0, 4.0);
+        calibrationStatus = scenario == AdasSimulator.Scenario.AUTO_CALIBRATION
+                ? CalibrationStore.Status.WIZARD_COMPLETED : CalibrationStore.Status.CALIBRATED;
+        calibrationProgress = calibrationStatus == CalibrationStore.Status.CALIBRATED ? 100 : 0;
+        autoCalibrationLearner.reset(calibrationStatus);
+        clearResults();
+        overlayView.setCalibration(calibration, calibrationStatus);
+
+        simulationButton.setText("模拟中 (点击停止)");
+        simulationButton.setBackgroundColor(0xFFC62828);
+
+        simulator.start(scenario, width, height, calibration, new AdasSimulator.Listener() {
+            @Override
+            public void onFrame(AdasSimulator.SimFrame simFrame) {
+                statusView.setText("【室内模拟】" + simFrame.description());
+                processAdasFrame(simFrame.detections(), simFrame.lane(), simFrame.speedKmh(),
+                        resultsGeneration, acceptFramesAfterNanos, true);
+            }
+
+            @Override
+            public void onFinished(AdasSimulator.Scenario finished) {
+                restoreSimulationState();
+                simulationButton.setText("室内模拟测试");
+                simulationButton.setBackgroundColor(0xB30D47A1);
+                statusView.setText(R.string.app_bootstrap_status);
+                Toast.makeText(MainActivity.this, "模拟完成: " + finished.displayName(), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private synchronized void restoreSimulationState() {
+        SimulationSnapshot snapshot = simulationSnapshot;
+        if (snapshot == null) {
+            return;
+        }
+        calibration = snapshot.calibration();
+        calibrationStatus = snapshot.status();
+        autoCalibrationLearner.reset(calibrationStatus);
+        calibrationProgress = autoCalibrationLearner.progress();
+        simulationSnapshot = null;
+        clearResults();
+        calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
+        overlayView.setCalibration(calibration, calibrationStatus);
+    }
     private void showCalibrationDialog() {
-        int width = latestAnalysis == null ? 1280 : latestAnalysis.detections().frameWidth();
-        int height = latestAnalysis == null ? 720 : latestAnalysis.detections().frameHeight();
+        if (simulator.isRunning()) {
+            Toast.makeText(this, "请先停止模拟再修改标定", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Analysis analysis = latestAnalysis;
+        int width = analysis == null ? 1280 : analysis.detections().frameWidth();
+        int height = analysis == null ? 720 : analysis.detections().frameHeight();
+
         LinearLayout form = new LinearLayout(this);
         form.setOrientation(LinearLayout.VERTICAL);
-        int padding = (int) (20 * getResources().getDisplayMetrics().density);
-        form.setPadding(padding, 0, padding, 0);
-        EditText cameraHeight = numberField("相机离地高度（米）");
-        EditText focalY = numberField("竖直焦距 fy（像素）");
-        EditText principalY = numberField("主点 cy（像素）");
-        EditText pitch = numberField("向下俯仰角（度）");
-        form.addView(cameraHeight);
-        form.addView(focalY);
-        form.addView(principalY);
-        form.addView(pitch);
-        if (calibration != null && calibration.isUsableFor(width, height)) {
-            cameraHeight.setText(Double.toString(calibration.cameraHeightMeters()));
-            focalY.setText(Double.toString(calibration.focalLengthYNormalized() * height));
-            principalY.setText(Double.toString(calibration.principalPointYNormalized() * height));
-            pitch.setText(Double.toString(calibration.pitchDegrees()));
+        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        form.setPadding(padding, padding / 2, padding, padding / 2);
+
+        TextView vehicleLabel = new TextView(this);
+        vehicleLabel.setText("1. 车辆类型与安装高度 (米):");
+        vehicleLabel.setTextSize(14f);
+        vehicleLabel.setTextColor(0xFFFFFFFF);
+        form.addView(vehicleLabel);
+
+        RadioGroup vehicleGroup = new RadioGroup(this);
+        vehicleGroup.setOrientation(RadioGroup.HORIZONTAL);
+        RadioButton rbSedan = new RadioButton(this);
+        rbSedan.setText("轿车 (1.25m)");
+        RadioButton rbSuv = new RadioButton(this);
+        rbSuv.setText("SUV (1.45m)");
+        RadioButton rbTruck = new RadioButton(this);
+        rbTruck.setText("货车 (1.75m)");
+        RadioButton rbCustom = new RadioButton(this);
+        rbCustom.setText("自定义");
+        vehicleGroup.addView(rbSedan);
+        vehicleGroup.addView(rbSuv);
+        vehicleGroup.addView(rbTruck);
+        vehicleGroup.addView(rbCustom);
+        form.addView(vehicleGroup);
+
+        EditText customHeightField = numberField("输入自定义离地高度(米，如 1.30)");
+        customHeightField.setVisibility(View.GONE);
+        form.addView(customHeightField);
+
+        rbSedan.setChecked(true);
+        if (calibration != null) {
+            double h = calibration.cameraHeightMeters();
+            if (Math.abs(h - 1.25) < 0.05) {
+                rbSedan.setChecked(true);
+            } else if (Math.abs(h - 1.45) < 0.05) {
+                rbSuv.setChecked(true);
+            } else if (Math.abs(h - 1.75) < 0.05) {
+                rbTruck.setChecked(true);
+            } else {
+                rbCustom.setChecked(true);
+                customHeightField.setVisibility(View.VISIBLE);
+                customHeightField.setText(Double.toString(h));
+            }
         }
-        new AlertDialog.Builder(this)
-                .setTitle("摄像头标定（" + width + "×" + height + "）")
-                .setMessage("请使用实测参数；保存后仅显示标定辅助线，尚未启用测距报警。")
-                .setView(form)
+        vehicleGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            customHeightField.setVisibility(checkedId == rbCustom.getId() ? View.VISIBLE : View.GONE);
+        });
+
+        TextView lensLabel = new TextView(this);
+        lensLabel.setText("\n2. 摄像头水平视场角 (HFOV):");
+        lensLabel.setTextSize(14f);
+        lensLabel.setTextColor(0xFFFFFFFF);
+        form.addView(lensLabel);
+
+        RadioGroup fovGroup = new RadioGroup(this);
+        fovGroup.setOrientation(RadioGroup.HORIZONTAL);
+        RadioButton rb90 = new RadioButton(this);
+        rb90.setText("标准 90° (推荐)");
+        RadioButton rb100 = new RadioButton(this);
+        rb100.setText("广角 100°");
+        RadioButton rb120 = new RadioButton(this);
+        rb120.setText("超广角 120°");
+        fovGroup.addView(rb90);
+        fovGroup.addView(rb100);
+        fovGroup.addView(rb120);
+        rb90.setChecked(true);
+        if (calibration != null && calibration.isUsableFor(width, height)) {
+            double currentFov = Math.toDegrees(2.0 * Math.atan(
+                    (width / 2.0) / (calibration.focalLengthYNormalized() * height)));
+            if (Math.abs(currentFov - 120.0) < Math.abs(currentFov - 100.0)
+                    && Math.abs(currentFov - 120.0) < Math.abs(currentFov - 90.0)) {
+                rb120.setChecked(true);
+            } else if (Math.abs(currentFov - 100.0) < Math.abs(currentFov - 90.0)) {
+                rb100.setChecked(true);
+            }
+        }
+        form.addView(fovGroup);
+
+        TextView guideNote = new TextView(this);
+        guideNote.setText("\n3. 物理对准提示:\n• 调整镜头使车头机盖露出在屏幕下方参考线处\n• 确保道路远方处于中间黄色地平线附近\n• 拧紧支架螺丝保存后，上路正常行驶自动收敛俯仰角");
+        guideNote.setTextSize(12f);
+        guideNote.setTextColor(0xFFB0BEC5);
+        form.addView(guideNote);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.addView(form);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("ADAS 摄像头安装向导（" + width + "×" + height + "）")
+                .setView(scrollView)
                 .setNegativeButton("取消", null)
-                .setPositiveButton("保存", (dialog, which) -> {
+                .setPositiveButton("保存并开启自学习", (dialog, which) -> {
                     try {
-                        CameraCalibration next = new CameraCalibration(width, height,
-                                parse(cameraHeight), parse(focalY) / height,
-                                parse(principalY) / height, parse(pitch));
-                        calibrationStore.save(next);
-                        calibration = next;
-                        overlayView.setCalibration(next);
-                        updateCalibrationStatus(latestAnalysis == null
-                                ? null : latestAnalysis.detections());
+                        double heightMeters;
+                        if (rbCustom.isChecked()) {
+                            heightMeters = parse(customHeightField);
+                        } else if (rbSuv.isChecked()) {
+                            heightMeters = 1.45;
+                        } else if (rbTruck.isChecked()) {
+                            heightMeters = 1.75;
+                        } else {
+                            heightMeters = 1.25;
+                        }
+
+                        double hfov = rb120.isChecked() ? 120.0 : (rb100.isChecked() ? 100.0 : 90.0);
+                        double initialPitch = 4.0;
+
+                        CameraCalibration next = CameraCalibration.fromWizard(
+                                width, height, heightMeters, hfov, initialPitch);
+
+                        applyCameraCalibration(next);
+                        Toast.makeText(this, "向导配置已保存！请上路以 >35km/h 正常行驶以完成自标定", Toast.LENGTH_LONG).show();
                     } catch (RuntimeException failure) {
-                        Toast.makeText(this, "标定参数无效: " + failure.getMessage(),
-                                Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, "参数错误: " + failure.getMessage(), Toast.LENGTH_LONG).show();
                     }
-                }).show();
+                });
+
+        if (calibrationStatus != CalibrationStore.Status.UNCONFIGURED) {
+            builder.setNeutralButton("重置标定", (dialog, which) -> {
+                applyCameraCalibration(null);
+                Toast.makeText(this, "已重置标定参数", Toast.LENGTH_SHORT).show();
+            });
+        }
+        builder.show();
+    }
+
+    private synchronized void applyCameraCalibration(CameraCalibration next) {
+        calibration = next;
+        calibrationStatus = next == null ? CalibrationStore.Status.UNCONFIGURED
+                : CalibrationStore.Status.WIZARD_COMPLETED;
+        calibrationProgress = 0;
+        autoCalibrationLearner.reset(calibrationStatus);
+        clearResults();
+        if (next == null) {
+            calibrationStore.clear();
+        } else {
+            calibrationStore.save(next, calibrationStatus, 0);
+        }
+        overlayView.setCalibration(next, calibrationStatus);
+        updateCalibrationStatus(null);
     }
 
     private EditText numberField(String hint) {
@@ -476,27 +924,56 @@ public final class MainActivity extends Activity {
         previewView.setTransform(matrix);
     }
 
-    private void clearResults() {
+    private synchronized void clearResults() {
         acceptFramesAfterNanos = System.nanoTime();
+        resultsGeneration++;
+        resetAnalysisState();
+        overlayView.setResult(null, null);
+    }
+
+    private synchronized void resetAnalysisState() {
+        if (alertAudio != null) {
+            alertAudio.stop();
+        }
+        tracker.reset();
+        motionEstimator.reset();
+        laneDetector.reset();
+        autoCalibrationLearner.resetSamples();
+        int progress = autoCalibrationLearner.progress();
+        if (calibrationProgress != progress) {
+            calibrationProgress = progress;
+            if (simulationSnapshot == null) {
+                calibrationStore.saveStatus(calibrationStatus, progress);
+            }
+        }
+        decisionEngine.reset();
+        previousDecisionTargetId = 0L;
+        previousTrackingState = LeadVehicleTracker.State.NONE;
+        previousTargetId = 0L;
+        previousProcessedTimestampNanos = 0L;
         latestAnalysis = null;
         heldAlerts = Set.of();
         alertsHoldUntilNanos = 0L;
-        overlayView.setResult(null, null);
     }
 
     @Override
     protected void onStop() {
-        started = false;
+        synchronized (this) {
+            started = false;
+            simulator.stop();
+            restoreSimulationState();
+            clearResults();
+        }
         metricsHandler.removeCallbacks(metricsUpdater);
         stopLocationUpdates();
         cameraSource.stop();
         frameConsumer.close();
-        clearResults();
         super.onStop();
     }
 
     @Override
     protected void onDestroy() {
+        simulator.stop();
         metricsHandler.removeCallbacks(metricsUpdater);
         cameraSource.close();
         frameConsumer.close();

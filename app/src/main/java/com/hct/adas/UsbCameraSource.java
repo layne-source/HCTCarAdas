@@ -12,6 +12,7 @@ import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.util.Log;
 import android.view.TextureView;
 
@@ -23,6 +24,7 @@ import java.util.Comparator;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** App-owned Android 13+ permissions/lifecycle, with the existing native UVC capture library. */
 public final class UsbCameraSource implements AutoCloseable, TextureView.SurfaceTextureListener {
@@ -35,6 +37,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
 
     private static final String TAG = "HctAdasCamera";
     private static final long SAMPLE_INTERVAL_NANOS = 200_000_000L;
+    private static final long FRAME_WATCHDOG_INTERVAL_MILLIS = 1_000L;
+    private static final long FRAME_WATCHDOG_TIMEOUT_NANOS = 3_000_000_000L;
+    private static final long STREAM_STABLE_NANOS = 5_000_000_000L;
     private final Activity activity;
     private final TextureView previewView;
     private final FrameDispatcher dispatcher;
@@ -43,6 +48,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private final String permissionAction = "com.hct.adas.USB_PERMISSION." + UUID.randomUUID();
     private final HandlerThread cameraThread = new HandlerThread("adas-camera");
     private final Handler cameraHandler;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger generation = new AtomicInteger();
     private final AtomicLong capturedFrames = new AtomicLong();
     private final AtomicLong invalidFrames = new AtomicLong();
@@ -50,12 +56,42 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private boolean closed;
     private boolean registered;
     private boolean permissionRequested;
-    private boolean opening;
+    private volatile boolean opening;
+    private volatile int openRetryCount;
+    private volatile boolean previewActive;
+    private volatile long previewStartedNanos;
+    private volatile long lastFrameNanos;
+    private boolean streamConfirmed;
     private UsbDevice selectedDevice;
     private SurfaceTexture surface;
     // The camera thread exclusively owns these native resources.
     private UVCCamera camera;
     private USBMonitor monitor;
+
+    private final Runnable frameWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (!running || closed) {
+                return;
+            }
+            if (previewActive) {
+                long now = System.nanoTime();
+                long reference = lastFrameNanos > 0L ? lastFrameNanos : previewStartedNanos;
+                if (reference > 0L && now - reference >= FRAME_WATCHDOG_TIMEOUT_NANOS) {
+                    int token = invalidatePreview();
+                    cameraHandler.post(UsbCameraSource.this::closeCamera);
+                    listener.onError(openRetryCount < 3
+                            ? "USB 摄像头视频流中断，正在自动重连"
+                            : "USB 摄像头视频流中断，自动重试已用尽，请点击重试");
+                    scheduleOpenRetry(token);
+                } else if (streamConfirmed && lastFrameNanos - previewStartedNanos >= STREAM_STABLE_NANOS) {
+                    // A single frame followed by another outage must not replenish the retry budget.
+                    openRetryCount = 0;
+                }
+            }
+            mainHandler.postDelayed(this, FRAME_WATCHDOG_INTERVAL_MILLIS);
+        }
+    };
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
@@ -69,18 +105,17 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                     if (usbManager.hasPermission(device)) {
                         tryOpen();
                     } else {
-                        listener.onError("USB 摄像头授权被拒绝，请重新进入页面授权");
+                        listener.onError("USB 摄像头授权被拒绝，请点击重试授权");
                     }
                 }
             } else if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction())) {
                 selectCamera();
             } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(intent.getAction())
                     && isSelected(device)) {
-                generation.incrementAndGet();
+                invalidatePreview();
                 selectedDevice = null;
                 permissionRequested = false;
-                opening = false;
-                dispatcher.discardPending();
+                openRetryCount = 0;
                 cameraHandler.post(UsbCameraSource.this::closeCamera);
                 listener.onDeviceDetached(device);
                 selectCamera();
@@ -106,6 +141,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             return;
         }
         running = true;
+        mainHandler.removeCallbacks(frameWatchdog);
+        mainHandler.postDelayed(frameWatchdog, FRAME_WATCHDOG_INTERVAL_MILLIS);
+        openRetryCount = 0;
         generation.incrementAndGet();
         surface = previewView.isAvailable() ? previewView.getSurfaceTexture() : null;
         IntentFilter filter = new IntentFilter(permissionAction);
@@ -130,15 +168,20 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         if (usbManager.hasPermission(selectedDevice)) {
             tryOpen();
         } else if (!permissionRequested) {
-            permissionRequested = true;
-            Intent intent = new Intent(permissionAction).setPackage(activity.getPackageName());
-            PendingIntent permission = PendingIntent.getBroadcast(activity, generation.get(), intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
-            try {
-                usbManager.requestPermission(selectedDevice, permission);
-            } catch (RuntimeException failure) {
-                reportError(generation.get(), "无法申请 USB 摄像头权限", failure);
-            }
+            requestPermission(selectedDevice);
+        }
+    }
+
+    private void requestPermission(UsbDevice device) {
+        permissionRequested = true;
+        Intent intent = new Intent(permissionAction).setPackage(activity.getPackageName());
+        PendingIntent permission = PendingIntent.getBroadcast(activity, generation.get(), intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
+        try {
+            usbManager.requestPermission(device, permission);
+        } catch (RuntimeException failure) {
+            permissionRequested = false;
+            reportError(generation.get(), "无法申请 USB 摄像头权限", failure);
         }
     }
 
@@ -157,12 +200,13 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     }
 
     private void tryOpen() {
-        if (!running || opening || selectedDevice == null || surface == null
+        // All callers run on the main thread; device and surface snapshots belong to this token.
+        if (!running || closed || opening || previewActive || selectedDevice == null || surface == null
                 || !usbManager.hasPermission(selectedDevice)) {
             return;
         }
+        int token = invalidatePreview();
         opening = true;
-        int token = generation.get();
         UsbDevice device = selectedDevice;
         SurfaceTexture target = surface;
         cameraHandler.post(() -> openCamera(token, device, target));
@@ -173,10 +217,10 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     }
 
     private void openCamera(int token, UsbDevice device, SurfaceTexture target) {
-        closeCamera();
         if (!isCurrent(token)) {
             return;
         }
+        closeCamera();
         try {
             // Use only the control-block bridge; do not call the old monitor.register().
             monitor = new USBMonitor(activity.getApplicationContext(), NO_MONITOR_CALLBACKS);
@@ -194,6 +238,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             int frameWidth = width;
             int frameHeight = height;
             long[] lastSample = {0}; // Confined to the native frame callback thread.
+            AtomicBoolean receivedFrame = new AtomicBoolean();
             camera.setFrameCallback(buffer -> {
                 if (!isCurrent(token)) {
                     return;
@@ -217,8 +262,15 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                 view.clear();
                 byte[] nv21 = new byte[expected];
                 view.get(nv21);
-                if (isCurrent(token)) {
+                synchronized (dispatcher) {
+                    if (!isCurrent(token)) {
+                        return;
+                    }
+                    lastFrameNanos = now;
                     dispatcher.offer(nv21, frameWidth, frameHeight, now);
+                }
+                if (receivedFrame.compareAndSet(false, true)) {
+                    mainHandler.post(() -> confirmStream(token, device));
                 }
             }, UVCCamera.PIXEL_FORMAT_NV21);
             camera.setPreviewTexture(target);
@@ -226,22 +278,71 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                 closeCamera();
                 return;
             }
+            long previewStart = System.nanoTime();
             camera.startPreview();
+            if (!isCurrent(token)) {
+                closeCamera();
+                return;
+            }
             Log.i(TAG, "Preview " + width + "x" + height + ", analysis sample rate=5 fps");
-            activity.runOnUiThread(() -> {
+            mainHandler.post(() -> {
                 if (isCurrent(token)) {
-                    listener.onDeviceConnectionChanged(device, true);
+                    previewStartedNanos = previewStart;
+                    previewActive = true;
+                    opening = false;
+                    confirmStream(token, device);
                 }
             });
         } catch (RuntimeException | LinkageError failure) {
             closeCamera();
-            reportError(token, "USB 摄像头打开失败", failure);
+            Log.e(TAG, "USB camera open failed", failure);
+            mainHandler.post(() -> {
+                if (isCurrent(token)) {
+                    opening = false;
+                    previewActive = false;
+                    listener.onError("USB 摄像头打开失败: " + failure.getClass().getSimpleName());
+                    scheduleOpenRetry(token);
+                }
+            });
         }
+    }
+
+    private void confirmStream(int token, UsbDevice device) {
+        if (isCurrent(token) && previewActive && lastFrameNanos > 0L && !streamConfirmed) {
+            streamConfirmed = true;
+            listener.onDeviceConnectionChanged(device, true);
+        }
+    }
+
+    private int invalidatePreview() {
+        int token = generation.incrementAndGet();
+        opening = false;
+        previewActive = false;
+        streamConfirmed = false;
+        previewStartedNanos = 0L;
+        synchronized (dispatcher) {
+            lastFrameNanos = 0L;
+            dispatcher.discardPending();
+        }
+        return token;
+    }
+
+    private void scheduleOpenRetry(int token) {
+        if (!isCurrent(token) || surface == null || selectedDevice == null || openRetryCount >= 3) {
+            return;
+        }
+        long delayMillis = 500L << openRetryCount;
+        openRetryCount++;
+        mainHandler.postDelayed(() -> {
+            if (isCurrent(token)) {
+                tryOpen();
+            }
+        }, delayMillis);
     }
 
     private void reportError(int token, String message, Throwable failure) {
         Log.e(TAG, message, failure);
-        activity.runOnUiThread(() -> {
+        mainHandler.post(() -> {
             if (isCurrent(token)) {
                 listener.onError(message + ": " + failure.getClass().getSimpleName());
             }
@@ -256,17 +357,42 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         return invalidFrames.get();
     }
 
+    /** Allows the foreground UI to retry after the bounded automatic retries are exhausted. */
+    public void retryOpen() {
+        if (!running || closed || opening) {
+            return;
+        }
+        if (previewActive) {
+            long reference = lastFrameNanos > 0L ? lastFrameNanos : previewStartedNanos;
+            if (System.nanoTime() - reference < FRAME_WATCHDOG_TIMEOUT_NANOS) {
+                return;
+            }
+        }
+        openRetryCount = 0;
+        invalidatePreview();
+        cameraHandler.post(this::closeCamera);
+        listener.onError("正在重新连接 USB 摄像头");
+        if (selectedDevice == null) {
+            selectCamera();
+        } else if (usbManager.hasPermission(selectedDevice)) {
+            tryOpen();
+        } else {
+            permissionRequested = false;
+            requestPermission(selectedDevice);
+        }
+    }
+
     public void stop() {
         running = false;
-        generation.incrementAndGet();
+        mainHandler.removeCallbacks(frameWatchdog);
+        invalidatePreview();
+        openRetryCount = 0;
         if (registered) {
             activity.unregisterReceiver(receiver);
             registered = false;
         }
         selectedDevice = null;
         permissionRequested = false;
-        opening = false;
-        dispatcher.discardPending();
         cameraHandler.post(this::closeCamera);
     }
 
@@ -274,7 +400,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         if (camera != null) {
             try {
                 camera.destroy();
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | LinkageError failure) {
                 Log.w(TAG, "Camera release failed", failure);
             } finally {
                 camera = null;
@@ -283,7 +409,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         if (monitor != null) {
             try {
                 monitor.destroy();
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | LinkageError failure) {
                 Log.w(TAG, "USB control block release failed", failure);
             } finally {
                 monitor = null;
@@ -310,9 +436,8 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
         surface = null;
-        generation.incrementAndGet();
-        opening = false;
-        dispatcher.discardPending();
+        invalidatePreview();
+        openRetryCount = 0;
         if (!cameraHandler.post(() -> {
             closeCamera();
             texture.release();

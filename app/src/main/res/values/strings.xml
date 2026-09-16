@@ -15,9 +15,12 @@
     <string name="tracking_active">前方候选 #%1$d · 跟踪中</string>
     <string name="tracking_lost">前方候选 #%1$d · 暂时丢失</string>
     <string name="tracking_box_label">前方候选 #%1$d</string>
-    <string name="calibration_unset">未设置摄像头标定；点击此处输入参数</string>
-    <string name="calibration_loaded">已加载标定 %1$d×%2$d；点击此处修改</string>
+    <string name="calibration_unset">未设置标定（点击启动安装向导）</string>
+    <string name="calibration_wizard_done">向导已完成 · 测距预警未启用，等待自学习（车速需 >35km/h）[H:%1$.2fm]</string>
+    <string name="calibration_in_progress">标定自学习中 %1$d%% · 测距预警未启用，请保持直行</string>
+    <string name="calibration_loaded">已标定 %1$d×%2$d [H:%3$.2fm · 俯仰:%4$.1f°]（点击修改）</string>
     <string name="calibration_size_mismatch">标定绑定 %1$d×%2$d，当前画面尺寸不一致</string>
     <string name="measurement_unavailable">距离不可用（未标定、目标丢失或几何无效）</string>
+    <string name="measurement_calibration_pending">距离预警未启用（标定尚未收敛）</string>
     <string name="measurement_status">距离 %1$s · TTC %2$s · %3$s</string>
 </resources>
