@@ -438,6 +438,10 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         surface = null;
         invalidatePreview();
         openRetryCount = 0;
+        if (running && !closed) {
+            // Also invalidate an inference already removed from the frame queue.
+            listener.onDeviceConnectionChanged(selectedDevice, false);
+        }
         if (!cameraHandler.post(() -> {
             closeCamera();
             texture.release();

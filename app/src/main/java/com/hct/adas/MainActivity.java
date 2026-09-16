@@ -40,6 +40,7 @@ public final class MainActivity extends Activity {
     private TextureView previewView;
     private VehicleOverlayView overlayView;
     private TextView statusView;
+    private CharSequence cameraStatusText;
     private TextView metricsView;
     private TextView calibrationView;
     private CalibrationStore calibrationStore;
@@ -211,22 +212,20 @@ public final class MainActivity extends Activity {
         cameraSource = new UsbCameraSource(this, previewView, frameDispatcher,
                 new UsbCameraSource.Listener() {
                     public void onDeviceAttached(UsbDevice device) {
-                        statusView.setText(R.string.camera_attached);
+                        updateCameraStatus(getString(R.string.camera_attached), false);
                     }
 
                     public void onDeviceConnectionChanged(UsbDevice device, boolean connected) {
-                        statusView.setText(connected ? R.string.camera_opened
-                                : R.string.camera_disconnected);
+                        updateCameraStatus(getString(connected ? R.string.camera_opened
+                                : R.string.camera_disconnected), !connected);
                     }
 
                     public void onDeviceDetached(UsbDevice device) {
-                        clearResults();
-                        statusView.setText(R.string.camera_disconnected);
+                        updateCameraStatus(getString(R.string.camera_disconnected), true);
                     }
 
                     public void onError(String message) {
-                        clearResults();
-                        statusView.setText(message + "\n点击此处重试");
+                        updateCameraStatus(message + "\n点击此处重试", true);
                     }
                 });
         previewView.addOnLayoutChangeListener((view, l, t, r, b, oldL, oldT, oldR, oldB) -> {
@@ -237,6 +236,18 @@ public final class MainActivity extends Activity {
         });
     }
 
+    /** Camera callbacks run on the main thread; real capture cannot reset a simulated session. */
+    private void updateCameraStatus(CharSequence text, boolean resetResults) {
+        cameraStatusText = text;
+        if (simulationSnapshot != null) {
+            return;
+        }
+        if (resetResults) {
+            clearResults();
+        }
+        statusView.setText(text);
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
@@ -244,7 +255,7 @@ public final class MainActivity extends Activity {
             started = true;
             clearResults();
         }
-        statusView.setText(R.string.app_bootstrap_status);
+        updateCameraStatus(getString(R.string.app_bootstrap_status), false);
         previousMetricsTime = System.nanoTime();
         previousCaptured = cameraSource.capturedFrames();
         frameConsumer.start();
@@ -252,7 +263,7 @@ public final class MainActivity extends Activity {
             cameraSource.start();
             ensureLocationPermission();
         } else {
-            statusView.setText(R.string.camera_permission_required);
+            updateCameraStatus(getString(R.string.camera_permission_required), false);
             if (!permissionAsked) {
                 permissionAsked = true;
                 requestPermissions(new String[] {Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
@@ -266,11 +277,11 @@ public final class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == CAMERA_PERMISSION_REQUEST && started) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                statusView.setText(R.string.app_bootstrap_status);
+                updateCameraStatus(getString(R.string.app_bootstrap_status), false);
                 cameraSource.start();
                 ensureLocationPermission();
             } else {
-                statusView.setText(R.string.camera_permission_required);
+                updateCameraStatus(getString(R.string.camera_permission_required), false);
             }
         } else if (requestCode == LOCATION_PERMISSION_REQUEST && started) {
             startLocationUpdates();
@@ -340,7 +351,7 @@ public final class MainActivity extends Activity {
         boolean fresh = result != null && (simulator.isRunning()
                 || (result.timestampNanos() >= acceptFramesAfterNanos
                 && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
-        if (!worker.lastError().isEmpty()) {
+        if (!simulator.isRunning() && !worker.lastError().isEmpty()) {
             metricsView.setText(stream + "\n" + worker.lastError());
             overlayView.setResult(null, null);
         } else if (fresh) {
@@ -645,7 +656,6 @@ public final class MainActivity extends Activity {
             restoreSimulationState();
             simulationButton.setText("室内模拟测试");
             simulationButton.setBackgroundColor(0xB30D47A1);
-            statusView.setText(R.string.app_bootstrap_status);
             Toast.makeText(this, "已停止模拟测试，恢复正常监测", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -721,7 +731,6 @@ public final class MainActivity extends Activity {
                 restoreSimulationState();
                 simulationButton.setText("室内模拟测试");
                 simulationButton.setBackgroundColor(0xB30D47A1);
-                statusView.setText(R.string.app_bootstrap_status);
                 Toast.makeText(MainActivity.this, "模拟完成: " + finished.displayName(), Toast.LENGTH_SHORT).show();
             }
         });
@@ -740,6 +749,8 @@ public final class MainActivity extends Activity {
         clearResults();
         calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
         overlayView.setCalibration(calibration, calibrationStatus);
+        statusView.setText(cameraStatusText == null
+                ? getString(R.string.app_bootstrap_status) : cameraStatusText);
     }
     private void showCalibrationDialog() {
         if (simulator.isRunning()) {
