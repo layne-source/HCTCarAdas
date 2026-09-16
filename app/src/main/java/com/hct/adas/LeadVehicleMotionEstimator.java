@@ -1,0 +1,72 @@
+package com.hct.adas;
+
+/** Converts a confirmed target's bottom edge into a filtered distance and closing speed. */
+public final class LeadVehicleMotionEstimator {
+    public record Measurement(long trackId, double distanceMeters, double closingSpeedMps,
+                              double targetAreaPixels, boolean visible) { }
+
+    private static final double DISTANCE_ALPHA = 0.35;
+    private static final double SPEED_ALPHA = 0.35;
+    private long previousId;
+    private long previousTimestamp;
+    private double filteredDistance;
+    private double filteredSpeed;
+    private boolean initialized;
+    private CameraCalibration previousCalibration;
+
+    public Measurement update(LeadVehicleTracker.Snapshot snapshot,
+                              CameraCalibration calibration, int width, int height) {
+        if (snapshot == null || snapshot.detection() == null
+                || snapshot.state() != LeadVehicleTracker.State.TRACKING
+                || calibration == null || !calibration.isUsableFor(width, height)) {
+            if (snapshot != null && snapshot.state() != LeadVehicleTracker.State.LOST) {
+                reset();
+            }
+            return new Measurement(snapshot == null ? 0L : snapshot.trackId(),
+                    Double.NaN, 0.0, 0.0, false);
+        }
+        VehicleDetector.Detection box = snapshot.detection();
+        double distance = calibration.estimateDistanceMeters(box.bottom());
+        if (!Double.isFinite(distance)) {
+            reset();
+            return new Measurement(snapshot.trackId(), Double.NaN, 0.0, area(box, width, height), false);
+        }
+        double closingSpeed = 0.0;
+        if (!initialized || !calibration.equals(previousCalibration)
+                || previousId != snapshot.trackId()
+                || snapshot.timestampNanos() <= previousTimestamp
+                || snapshot.timestampNanos() - previousTimestamp > 2_000_000_000L) {
+            filteredDistance = distance;
+            filteredSpeed = 0.0;
+            initialized = true;
+            previousCalibration = calibration;
+        } else {
+            double dt = (snapshot.timestampNanos() - previousTimestamp) / 1_000_000_000.0;
+            double oldDistance = filteredDistance;
+            filteredDistance += DISTANCE_ALPHA * (distance - filteredDistance);
+            double rawSpeed = (oldDistance - filteredDistance) / dt;
+            if (!Double.isFinite(rawSpeed)) {
+                rawSpeed = 0.0;
+            }
+            filteredSpeed += SPEED_ALPHA * (rawSpeed - filteredSpeed);
+            closingSpeed = Math.max(-50.0, Math.min(50.0, filteredSpeed));
+        }
+        previousId = snapshot.trackId();
+        previousTimestamp = snapshot.timestampNanos();
+        return new Measurement(snapshot.trackId(), filteredDistance, closingSpeed,
+                area(box, width, height), true);
+    }
+
+    public void reset() {
+        initialized = false;
+        previousId = 0L;
+        previousTimestamp = 0L;
+        filteredDistance = Double.NaN;
+        filteredSpeed = 0.0;
+        previousCalibration = null;
+    }
+
+    private static double area(VehicleDetector.Detection box, int width, int height) {
+        return (box.right() - box.left()) * width * (box.bottom() - box.top()) * height;
+    }
+}

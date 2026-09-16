@@ -38,6 +38,21 @@ public final class AdasDecisionEngineTest {
                 .events().contains(AdasDecisionEngine.Alert.LVSA));
     }
 
+    @Test
+    public void emitsLaneDepartureOnlyAfterValidSpeedAndContinuousOffset() {
+        AdasDecisionEngine engine = new AdasDecisionEngine();
+        AdasDecisionEngine.Observation observation = observation(0L, 60.0,
+                20.0, 0.0, 1000.0, false);
+        AdasDecisionEngine.LaneObservation lane = new AdasDecisionEngine.LaneObservation(
+                0.16, 0.8, true);
+
+        assertFalse(engine.update(observation, lane).events().contains(AdasDecisionEngine.Alert.LDW));
+        assertFalse(engine.update(observation(500L, 60.0, 20.0, 0.0, 1000.0, false), lane)
+                .events().contains(AdasDecisionEngine.Alert.LDW));
+        assertTrue(engine.update(observation(1_000L, 60.0, 20.0, 0.0, 1000.0, false), lane)
+                .events().contains(AdasDecisionEngine.Alert.LDW));
+    }
+
     private static AdasDecisionEngine.Observation observation(
             long timestamp,
             double egoSpeedKmh,
