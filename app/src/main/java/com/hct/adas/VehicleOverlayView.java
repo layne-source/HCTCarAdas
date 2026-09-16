@@ -16,10 +16,14 @@ public final class VehicleOverlayView extends View {
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint regionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint laneFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint laneLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path regionPath = new Path();
     private VehicleDetector.Result result;
     private LeadVehicleTracker.Snapshot tracking;
     private CameraCalibration calibration;
+    private LaneDepartureDetector.Observation lane;
+    private AdasDecisionEngine.Decision decision;
 
     public VehicleOverlayView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -34,12 +38,23 @@ public final class VehicleOverlayView extends View {
         regionPaint.setStyle(Paint.Style.STROKE);
         regionPaint.setStrokeWidth(density);
         regionPaint.setPathEffect(new DashPathEffect(new float[] {8f * density, 6f * density}, 0));
+        laneFillPaint.setStyle(Paint.Style.FILL);
+        laneLinePaint.setStyle(Paint.Style.STROKE);
+        laneLinePaint.setStrokeWidth(3f * density);
     }
 
     public void setResult(VehicleDetector.Result result, LeadVehicleTracker.Snapshot tracking) {
+        setResult(result, tracking, null, null);
+    }
+
+    public void setResult(VehicleDetector.Result result, LeadVehicleTracker.Snapshot tracking,
+                          LaneDepartureDetector.Observation lane,
+                          AdasDecisionEngine.Decision decision) {
         this.result = result;
         this.tracking = result != null && tracking != null
                 && tracking.timestampNanos() == result.timestampNanos() ? tracking : null;
+        this.lane = lane;
+        this.decision = decision;
         invalidate();
     }
 
@@ -61,6 +76,7 @@ public final class VehicleOverlayView extends View {
         float left = (getWidth() - width) / 2f;
         float top = (getHeight() - height) / 2f;
         drawSearchRegion(canvas, left, top, width, height);
+        drawLane(canvas, left, top, width, height);
         if (calibration != null && calibration.isUsableFor(result.frameWidth(), result.frameHeight())) {
             Paint calibrationPaint = regionPaint;
             calibrationPaint.setColor(0xFFFFB74D);
@@ -74,8 +90,7 @@ public final class VehicleOverlayView extends View {
         }
         for (VehicleDetector.Detection detection : result.vehicles()) {
             boolean selected = tracking != null && detection.equals(tracking.detection());
-            int color = selected ? (tracking.state() == LeadVehicleTracker.State.TRACKING
-                    ? Color.YELLOW : Color.CYAN) : Color.GREEN;
+            int color = selected ? selectedColor() : Color.GREEN;
             boxPaint.setColor(color);
             textPaint.setColor(color);
             float x = left + detection.left() * width;
@@ -96,6 +111,45 @@ public final class VehicleOverlayView extends View {
                     detection.confidence() * 100f), x,
                     Math.max(textPaint.getTextSize(), y - 4f), textPaint);
         }
+    }
+
+    private int selectedColor() {
+        if (decision != null && decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
+            return Color.RED;
+        }
+        if (decision != null && (decision.headwayWarning() || decision.laneWarning())) {
+            return Color.YELLOW;
+        }
+        return tracking != null && tracking.state() == LeadVehicleTracker.State.CANDIDATE
+                ? Color.CYAN : Color.YELLOW;
+    }
+
+    private void drawLane(Canvas canvas, float left, float top, float width, float height) {
+        if (lane == null || !lane.available()) {
+            return;
+        }
+        float leftTop = left + (float) lane.leftTopX() * width;
+        float rightTop = left + (float) lane.rightTopX() * width;
+        float leftBottom = left + (float) lane.leftBottomX() * width;
+        float rightBottom = left + (float) lane.rightBottomX() * width;
+        int color = decision != null && decision.laneWarning() ? Color.YELLOW : Color.GREEN;
+        laneFillPaint.setColor((color & 0x00ffffff) | 0x33000000);
+        Path fill = new Path();
+        fill.moveTo(leftTop, top + height * 0.58f);
+        fill.lineTo(rightTop, top + height * 0.58f);
+        fill.lineTo(rightBottom, top + height * 0.94f);
+        fill.lineTo(leftBottom, top + height * 0.94f);
+        fill.close();
+        canvas.drawPath(fill, laneFillPaint);
+        laneLinePaint.setColor((color & 0x00ffffff) | 0xcc000000);
+        Path lines = new Path();
+        lines.moveTo(leftTop, top + height * 0.58f);
+        lines.lineTo(leftBottom, top + height * 0.94f);
+        canvas.drawPath(lines, laneLinePaint);
+        lines.reset();
+        lines.moveTo(rightTop, top + height * 0.58f);
+        lines.lineTo(rightBottom, top + height * 0.94f);
+        canvas.drawPath(lines, laneLinePaint);
     }
 
     private void drawSearchRegion(Canvas canvas, float left, float top, float width, float height) {

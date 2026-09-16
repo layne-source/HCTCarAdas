@@ -5,7 +5,7 @@
     <string name="camera_opened">USB 摄像头已打开</string>
     <string name="camera_disconnected">USB 摄像头已断开</string>
     <string name="camera_permission_required">需要相机权限才能访问 USB 视频设备；点击此处重新授权</string>
-    <string name="calibration_required">虚线为前方搜索区，非车道线；测距及报警尚未启用</string>
+    <string name="calibration_required">点击设置摄像头标定；绿色区域为车道估计，颜色仅表示当前风险</string>
     <string name="waiting_for_frames">等待有效视频帧</string>
     <string name="stale_detection_result">检测结果已过期，请检查帧流和分析耗时</string>
     <string name="stream_metrics">采集 %1$.1f fps · 输入 %2$d · 消费 %3$d · 丢帧 %4$d · 异常 %5$d</string>

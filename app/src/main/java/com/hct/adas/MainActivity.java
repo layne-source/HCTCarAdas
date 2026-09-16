@@ -22,6 +22,7 @@ import android.widget.Toast;
 
 import java.io.IOException;
 import java.util.Locale;
+import java.util.Set;
 
 /** Foreground vehicle detection/tracking; calibrated warnings are a later stage. */
 public final class MainActivity extends Activity {
@@ -52,6 +53,8 @@ public final class MainActivity extends Activity {
                             AdasDecisionEngine.Decision decision) { }
 
     private volatile Analysis latestAnalysis;
+    private volatile Set<AdasDecisionEngine.Alert> heldAlerts = Set.of();
+    private volatile long alertsHoldUntilNanos;
     private long previousCaptured;
     private long previousMetricsTime;
     private final Handler metricsHandler = new Handler(Looper.getMainLooper());
@@ -109,6 +112,7 @@ public final class MainActivity extends Activity {
                 if (trackingSessionStart != sessionStart) {
                     tracker.reset();
                     motionEstimator.reset();
+                    laneDetector.reset();
                     decisionEngine.reset();
                     trackingSessionStart = sessionStart;
                 }
@@ -146,6 +150,10 @@ public final class MainActivity extends Activity {
                     AdasDecisionEngine.Decision decision = decisionEngine.update(observation,
                             new AdasDecisionEngine.LaneObservation(lane.centerOffset(),
                                     lane.confidence(), lane.available()));
+                    if (!decision.events().isEmpty()) {
+                        heldAlerts = decision.events();
+                        alertsHoldUntilNanos = System.nanoTime() + 1_500_000_000L;
+                    }
                     if (started && sessionStart == acceptFramesAfterNanos && alertAudio != null) {
                         alertAudio.play(decision.events());
                     }
@@ -166,6 +174,7 @@ public final class MainActivity extends Activity {
                     detector = null;
                     initializationFailure = null;
                     tracker.reset();
+                    laneDetector.reset();
                 }
             }
         });
@@ -269,11 +278,12 @@ public final class MainActivity extends Activity {
             overlayView.setResult(null, null);
         } else if (fresh) {
             fitPreview(result);
-            overlayView.setResult(result, analysis.tracking());
+            overlayView.setResult(result, analysis.tracking(), analysis.lane(),
+                    displayDecision(analysis, now));
             metricsView.setText(stream + "\n" + getString(R.string.detection_metrics,
                     result.vehicles().size(), result.inferenceNanos() / 1_000_000.0)
                     + "\n" + trackingStatus(analysis.tracking())
-                    + "\n" + measurementStatus(analysis));
+                    + "\n" + measurementStatus(analysis, now));
         } else {
             overlayView.setResult(null, null);
             if (result != null && result.timestampNanos() >= acceptFramesAfterNanos) {
@@ -295,21 +305,43 @@ public final class MainActivity extends Activity {
         };
     }
 
-    private String measurementStatus(Analysis analysis) {
+    private String measurementStatus(Analysis analysis, long now) {
         LeadVehicleMotionEstimator.Measurement motion = analysis.motion();
+        String lane = analysis.lane().available()
+                ? (displayDecision(analysis, now).laneWarning() ? "车道注意" : "车道正常") : "车道不可用";
         if (!motion.visible()) {
-            return getString(R.string.measurement_unavailable);
+            return getString(R.string.measurement_unavailable) + " · " + lane;
         }
         double ttc = motion.closingSpeedMps() > 0.0
                 ? motion.distanceMeters() / motion.closingSpeedMps() : Double.NaN;
         String distance = String.format(Locale.ROOT, "%.1f m", motion.distanceMeters());
         String ttcText = Double.isFinite(ttc)
                 ? String.format(Locale.ROOT, "%.1f s", ttc) : "--";
-        String warning = analysis.decision().events().isEmpty()
-                ? (analysis.decision().headwayWarning() ? "HMW 条件" : "无预警")
-                : "事件: " + analysis.decision().events();
-        String lane = analysis.decision().laneWarning() ? " · LDW 条件" : "";
-        return getString(R.string.measurement_status, distance, ttcText, warning + lane);
+        AdasDecisionEngine.Decision shown = displayDecision(analysis, now);
+        String warning = shown.events().isEmpty()
+                ? (shown.headwayWarning() ? "HMW 条件" : "无预警")
+                : "事件: " + shown.events();
+        String laneWarning = shown.laneWarning() ? " · LDW 条件" : "";
+        return getString(R.string.measurement_status, distance, ttcText,
+                riskStatus(shown) + " · " + warning + laneWarning + " · " + lane);
+    }
+
+    private String riskStatus(AdasDecisionEngine.Decision decision) {
+        if (decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
+            return "危险";
+        }
+        if (decision.headwayWarning() || decision.laneWarning()) {
+            return "注意";
+        }
+        return "正常";
+    }
+
+    private AdasDecisionEngine.Decision displayDecision(Analysis analysis, long now) {
+        if (now < alertsHoldUntilNanos && !heldAlerts.isEmpty()) {
+            return new AdasDecisionEngine.Decision(heldAlerts,
+                    analysis.decision().headwayWarning(), analysis.decision().laneWarning());
+        }
+        return analysis.decision();
     }
 
     private boolean validSpeedKmh() {
@@ -447,6 +479,8 @@ public final class MainActivity extends Activity {
     private void clearResults() {
         acceptFramesAfterNanos = System.nanoTime();
         latestAnalysis = null;
+        heldAlerts = Set.of();
+        alertsHoldUntilNanos = 0L;
         overlayView.setResult(null, null);
     }
 
