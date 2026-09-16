@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.pm.PackageManager;
+import android.graphics.Insets;
 import android.graphics.Matrix;
 import android.hardware.usb.UsbDevice;
 import android.location.Location;
@@ -20,6 +21,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.text.InputType;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
@@ -95,7 +97,17 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().setDecorFitsSystemWindows(false);
         setContentView(R.layout.activity_main);
+        View content = findViewById(R.id.adas_content);
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout());
+            // Keep preview, overlay and controls in one coordinate space clear of system UI.
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            return insets;
+        });
+        content.requestApplyInsets();
         statusView = findViewById(R.id.status);
         metricsView = findViewById(R.id.metrics);
         calibrationView = findViewById(R.id.calibration);
