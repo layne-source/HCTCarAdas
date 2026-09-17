@@ -1,0 +1,77 @@
+package com.hct.adas;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+import java.util.Set;
+
+import org.junit.Test;
+
+/**
+ * Guards the diagnostic log lines. A specifier/argument type mismatch throws
+ * {@link java.util.IllegalFormatConversionException}, and every one of these lines is emitted from
+ * the main thread, so the failure mode is a process-wide crash rather than a missing log entry.
+ * A regression of that kind is exactly what happened once, so the real {@link String#format} call
+ * is exercised here rather than a copy of the format strings.
+ */
+public final class AdasLogFormatTest {
+
+    @Test
+    public void heartbeatRendersEveryFieldWithoutConversionErrors() {
+        // Mixes double, long and String arguments: the original defect was a %d given to a double.
+        String line = AdasLogFormat.heartbeat(15.6, 219L, 100L, 0L, 119L,
+                "60.0 km/h", "CALIBRATED(H=1.25m, pitch=4.0°)", "#1(D=11.0m, vc=5.7m/s, TTC=1.9s)",
+                "offset=-0.07, conf=0.68", "[FCW]");
+
+        assertTrue(line.startsWith("[HEARTBEAT] FPS=15.6"));
+        assertTrue(line.contains("Age=219ms"));
+        assertTrue(line.contains("Split=100+0+119ms"));
+        assertTrue(line.contains("Speed=60.0 km/h"));
+        assertTrue(line.contains("Alert=[FCW]"));
+    }
+
+    @Test
+    public void heartbeatRendersZeroTimingsBeforeTheFirstFrame() {
+        // The metrics record reports zeros until a frame has been handled, so this is the very first
+        // heartbeat a fresh process emits.
+        String line = AdasLogFormat.heartbeat(0.0, 0L, 0L, 0L, 0L,
+                "NO_GPS", "UNSET", "NONE", "UNAVAILABLE", "NONE");
+
+        assertTrue(line.contains("FPS=0.0"));
+        assertTrue(line.contains("Age=0ms"));
+        assertTrue(line.contains("Split=0+0+0ms"));
+    }
+
+    @Test
+    public void dangerStartFallsBackWhenTtcIsNotUsable() {
+        String finite = AdasLogFormat.dangerStart(175L, 13.4, 5.6, 60.0, 2.39);
+        assertTrue(finite.contains("TTC=2.39s"));
+        assertTrue(finite.contains("Age=175ms"));
+
+        String notAvailable = AdasLogFormat.dangerStart(175L, 13.4, 5.6, 60.0, Double.NaN);
+        assertTrue(notAvailable.contains("TTC=--"));
+    }
+
+    @Test
+    public void alertTriggerRendersNegativeConfirmationForEventsWithoutADangerEdge() {
+        String fcw = AdasLogFormat.alertTrigger("FCW", 0L, 413L, 11.0, 5.7, 60.0, 1L);
+        assertTrue(fcw.contains(">>> FCW <<<"));
+        assertTrue(fcw.contains("Confirm=413ms"));
+        assertTrue(fcw.contains("Target=#1"));
+
+        // LDW and LVSA legitimately fire without a recorded danger edge.
+        String ldw = AdasLogFormat.alertTrigger("LDW", 12L, -1L, Double.NaN, 0.0, 65.0, 0L);
+        assertTrue(ldw.contains("Confirm=-1ms"));
+        assertTrue(ldw.contains("Target=#0"));
+    }
+
+    @Test
+    public void alertsRendersNoneInsteadOfAnEmptySet() {
+        assertEquals("NONE", AdasLogFormat.alerts(null));
+        assertEquals("NONE", AdasLogFormat.alerts(Set.of()));
+        String rendered = AdasLogFormat.alerts(Set.of(AdasDecisionEngine.Alert.FCW));
+        assertTrue(rendered.contains("FCW"));
+        assertFalse(rendered.contains("NONE"));
+    }
+}

@@ -359,18 +359,18 @@ public final class MainActivity extends Activity {
                     ? String.format(Locale.ROOT, "offset=%.2f, conf=%.2f", heartbeat.lane().centerOffset(), heartbeat.lane().confidence())
                     : "UNAVAILABLE";
             String speedDesc = validSpeedKmh() ? String.format(Locale.ROOT, "%.1f km/h", egoSpeedKmh) : "NO_GPS";
-            String eventDesc = (heartbeat != null && !heartbeat.decision().events().isEmpty())
-                    ? heartbeat.decision().events().toString() : "NONE";
+            String eventDesc = AdasLogFormat.alerts(
+                    heartbeat == null ? Set.of() : heartbeat.decision().events());
             // Age is mixed with the 250 ms metrics phase, so report it alongside the split at the
             // hand-off and the dequeue: the parts are phase-free and attribute latency to the
             // throttle, the queue or the pipeline.
-            long[] splitMs = measurementSplitMs(workerSnapshot, now);
             double currentFps = (captured - previousCaptured) * 1_000_000_000.0
                     / Math.max(1L, now - previousMetricsTime);
 
-            Log.i(TAG, String.format(Locale.ROOT,
-                    "[HEARTBEAT] FPS=%.1f | Age=%.0fms | Split=%d+%d+%dms | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
-                    currentFps, splitMs[3], splitMs[0], splitMs[1], splitMs[2],
+            Log.i(TAG, AdasLogFormat.heartbeat(currentFps, measurementAgeMs(workerSnapshot, now),
+                    measurementCaptureToHandoffMs(workerSnapshot),
+                    measurementQueueWaitMs(workerSnapshot),
+                    measurementProcessingMs(workerSnapshot),
                     speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
         }
         double fps = (captured - previousCaptured) * 1_000_000_000.0
@@ -420,30 +420,42 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * Splits the end-to-end measurement leg of the newest processed frame into
-     * {@code {captureToHandoff, queueWait, processing, total}} milliseconds.
+     * Millisecond parts of the end-to-end measurement leg for the newest processed frame: how long
+     * the frame stayed between capture and hand-off, how long it waited in the queue, and how long
+     * the worker spent handling it.
      *
-     * <p>All four are differences between timestamps taken on the same clock, so unlike the
-     * heartbeat's {@code Age} they do not carry the 250 ms metrics-tick phase. They answer different
-     * questions: {@code captureToHandoff} is the cost of the sampling throttle and the NV21 copy,
-     * {@code queueWait} is backlog, and {@code processing} is the per-frame pipeline cost that a
-     * cheaper detection stage would reduce.
+     * <p>All are differences between timestamps taken on the same clock, so unlike the heartbeat's
+     * {@code Age} they do not carry the 250 ms metrics-tick phase. They answer different questions:
+     * capture-to-hand-off is the sampling throttle plus the NV21 copy, queue wait is backlog, and
+     * processing is the per-frame pipeline cost that a cheaper detection stage would reduce.
      *
-     * <p>Returns zeros before the first frame is processed, and never returns a negative part.
+     * <p>Each is exposed as its own typed accessor rather than an array: a format-string mismatch
+     * between {@code long} and {@code double} throws at runtime, and every one of these values goes
+     * straight into a log statement.
      */
-    private static long[] measurementSplitMs(FrameConsumer.Metrics worker, long nowNanos) {
-        long handedOff = worker.offeredNanos();
-        long pickedUp = worker.pickedUpNanos();
-        long finished = worker.finishedNanos();
-        long capturedAt = worker.lastTimestampNanos();
-        if (handedOff == 0L || pickedUp == 0L || finished == 0L || capturedAt == 0L) {
-            return new long[] {0L, 0L, 0L, 0L};
+    private static long measurementCaptureToHandoffMs(FrameConsumer.Metrics worker) {
+        return elapsedMs(worker.lastTimestampNanos(), worker.offeredNanos());
+    }
+
+    private static long measurementQueueWaitMs(FrameConsumer.Metrics worker) {
+        return elapsedMs(worker.offeredNanos(), worker.pickedUpNanos());
+    }
+
+    private static long measurementProcessingMs(FrameConsumer.Metrics worker) {
+        return elapsedMs(worker.pickedUpNanos(), worker.finishedNanos());
+    }
+
+    /** Age of the newest processed frame at this instant, in milliseconds. */
+    private static long measurementAgeMs(FrameConsumer.Metrics worker, long nowNanos) {
+        return elapsedMs(worker.lastTimestampNanos(), nowNanos);
+    }
+
+    /** Non-negative difference of two {@link System#nanoTime()} readings, in milliseconds. */
+    private static long elapsedMs(long fromNanos, long toNanos) {
+        if (fromNanos == 0L || toNanos == 0L || toNanos < fromNanos) {
+            return 0L;
         }
-        long captureToHandoff = Math.max(0L, handedOff - capturedAt) / 1_000_000L;
-        long queueWait = Math.max(0L, pickedUp - handedOff) / 1_000_000L;
-        long processing = Math.max(0L, finished - pickedUp) / 1_000_000L;
-        long total = Math.max(0L, nowNanos - capturedAt) / 1_000_000L;
-        return new long[] {captureToHandoff, queueWait, processing, total};
+        return (toNanos - fromNanos) / 1_000_000L;
     }
 
     private String trackingStatus(LeadVehicleTracker.Snapshot tracking) {
@@ -740,12 +752,10 @@ public final class MainActivity extends Activity {
         long resultAgeMs = Math.max(0L, nowNanos - result.timestampNanos()) / 1_000_000L;
         if (decision.collisionDanger() && !previousCollisionDanger) {
             dangerStartedNanos = nowNanos;
-            Log.w(TAG, String.format(Locale.ROOT,
-                    "[DANGER-START] Age=%dms | Dist=%.1fm | ClosingSpeed=%.1fm/s | EgoSpeed=%.1f km/h | TTC=%s",
-                    resultAgeMs, motion.distanceMeters(), motion.closingSpeedMps(), speed,
-                    motion.closingSpeedMps() > 0.0
-                            ? String.format(Locale.ROOT, "%.2fs",
-                            motion.distanceMeters() / motion.closingSpeedMps()) : "--"));
+            double ttcSeconds = motion.closingSpeedMps() > 0.0
+                    ? motion.distanceMeters() / motion.closingSpeedMps() : Double.NaN;
+            Log.w(TAG, AdasLogFormat.dangerStart(resultAgeMs, motion.distanceMeters(),
+                    motion.closingSpeedMps(), speed, ttcSeconds));
         }
         previousCollisionDanger = decision.collisionDanger();
         if (!decision.events().isEmpty()) {
@@ -755,10 +765,9 @@ public final class MainActivity extends Activity {
             long confirmationMs = dangerStartedNanos > 0L
                     ? (nowNanos - dangerStartedNanos) / 1_000_000L : -1L;
             for (AdasDecisionEngine.Alert alert : decision.events()) {
-                Log.w(TAG, String.format(Locale.ROOT,
-                        "[ALERT-TRIGGER] >>> %s <<< | Age=%dms | Confirm=%dms | Dist=%.1fm | ClosingSpeed=%.1fm/s | EgoSpeed=%.1f km/h | Target=#%d",
-                        alert.name(), resultAgeMs, confirmationMs, motion.distanceMeters(),
-                        motion.closingSpeedMps(), speed, tracking.trackId()));
+                Log.w(TAG, AdasLogFormat.alertTrigger(alert.name(), resultAgeMs, confirmationMs,
+                        motion.distanceMeters(), motion.closingSpeedMps(), speed,
+                        tracking.trackId()));
             }
         }
         if (tracking.state() != previousTrackingState || tracking.trackId() != previousTargetId) {
