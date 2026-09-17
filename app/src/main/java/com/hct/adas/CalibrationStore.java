@@ -12,6 +12,14 @@ public final class CalibrationStore {
         CALIBRATED
     }
 
+    /**
+     * Records written before camera binding existed carry no {@link #KEY_CAMERA_ID}, so
+     * {@link #load(String)} cannot attribute them to a device and they are treated as unbound
+     * rather than migrated. That is a deliberate choice for the current test phase: the project has
+     * no deployed users to keep compatible, and silently adopting an unattributable pitch is
+     * exactly the failure this binding exists to prevent. Revisit if the app ever ships to users
+     * who would lose a valid calibration on upgrade.
+     */
     private static final String PREFS = "camera_calibration";
     private static final int VERSION = 1;
     private static final String KEY_VERSION = "version";

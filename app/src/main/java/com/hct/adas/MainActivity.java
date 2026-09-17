@@ -1036,9 +1036,11 @@ public final class MainActivity extends Activity {
     /**
      * Rebinds calibration state once a camera has actually opened. A stored calibration without a
      * recorded camera id cannot be attributed to the device on the other end of the cable, so it is
-     * treated as unbound and dropped: keeping it would silently apply one camera's pitch to another.
-     * When no camera id is known yet the current state is left untouched, because that says nothing
-     * about whether the calibration belongs to this camera.
+     * treated as unbound and dropped rather than adopted: keeping it would silently apply one
+     * camera's pitch to another. This project is still in its test phase, so the resulting one-off
+     * re-calibration on upgrade is accepted instead of migrating the old record; see
+     * {@code CalibrationStore} for that note. When no camera id is known yet the current state is
+     * left untouched, because that says nothing about whether the calibration belongs to this camera.
      */
     private synchronized void reloadCalibrationForCamera() {
         String currentId = cameraSource == null ? "" : cameraSource.currentCameraId();
