@@ -7,6 +7,7 @@ public final class LeadVehicleMotionEstimator {
 
     private static final double DISTANCE_ALPHA = 0.35;
     private static final double SPEED_ALPHA = 0.35;
+    private static final double MAX_RELATIVE_ACCEL_MPS2 = 12.0; // ~1.2g max automotive relative acceleration
     private long previousId;
     private long previousTimestamp;
     private double previousRawDistance;
@@ -51,6 +52,10 @@ public final class LeadVehicleMotionEstimator {
             previousRawDistance = distance;
             if (!Double.isFinite(rawSpeed)) {
                 rawSpeed = 0.0;
+            } else {
+                // Reject single-frame box jitter: clamp to realistic vehicle acceleration limit
+                double maxSpeedChange = MAX_RELATIVE_ACCEL_MPS2 * dt;
+                rawSpeed = Math.max(filteredSpeed - maxSpeedChange, Math.min(filteredSpeed + maxSpeedChange, rawSpeed));
             }
             filteredSpeed += SPEED_ALPHA * (rawSpeed - filteredSpeed);
             filteredDistance += DISTANCE_ALPHA * (distance - filteredDistance);

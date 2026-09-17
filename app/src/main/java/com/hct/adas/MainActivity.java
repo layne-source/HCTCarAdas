@@ -21,6 +21,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.text.InputType;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -77,6 +78,7 @@ public final class MainActivity extends Activity {
     private long previousDecisionTargetId;
     private volatile Analysis latestAnalysis;
     private volatile Set<AdasDecisionEngine.Alert> heldAlerts = Set.of();
+    private volatile long heldAlertTargetId;
     private volatile long alertsHoldUntilNanos;
     private long previousCaptured;
     private long previousMetricsTime;
@@ -97,14 +99,13 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setDecorFitsSystemWindows(false);
         setContentView(R.layout.activity_main);
         View content = findViewById(R.id.adas_content);
         content.setOnApplyWindowInsetsListener((view, insets) -> {
-            Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
-                    | WindowInsets.Type.displayCutout());
-            // Keep preview, overlay and controls in one coordinate space clear of system UI.
-            view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            Insets navBars = insets.getInsets(WindowInsets.Type.navigationBars());
+            Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+            int bottom = Math.max(navBars.bottom, systemBars.bottom);
+            overlayView.setBottomInset(bottom);
             return insets;
         });
         content.requestApplyInsets();
@@ -444,7 +445,9 @@ public final class MainActivity extends Activity {
     }
 
     private AdasDecisionEngine.Decision displayDecision(Analysis analysis, long now) {
-        if (now < alertsHoldUntilNanos && !heldAlerts.isEmpty()) {
+        long currentTargetId = (analysis != null && analysis.tracking() != null)
+                ? analysis.tracking().trackId() : 0L;
+        if (now < alertsHoldUntilNanos && !heldAlerts.isEmpty() && heldAlertTargetId == currentTargetId) {
             return new AdasDecisionEngine.Decision(heldAlerts,
                     analysis.decision().headwayWarning(),
                     analysis.decision().headwayCritical(),
@@ -518,14 +521,31 @@ public final class MainActivity extends Activity {
                         || !Float.isFinite(location.getSpeed()) || location.getSpeed() < 0f) {
                     return;
                 }
+                if (location.hasAccuracy() && location.getAccuracy() > 50f) {
+                    return; // Reject poor GPS fix accuracy
+                }
+                double rawKmh = location.getSpeed() * 3.6;
+                if (rawKmh > 180.0) {
+                    return; // Reject unrealistic automotive speed
+                }
                 long measuredAt = location.getElapsedRealtimeNanos();
                 long now = SystemClock.elapsedRealtimeNanos();
                 if (measuredAt <= speedTimestampNanos || measuredAt > now
                         || now - measuredAt > 2_000_000_000L) {
                     return;
                 }
+                // Reject impossible acceleration spikes (> 15 m/s^2 ≈ 1.5g)
+                if (Double.isFinite(egoSpeedKmh) && speedTimestampNanos > 0L) {
+                    double dtSec = (measuredAt - speedTimestampNanos) / 1_000_000_000.0;
+                    if (dtSec > 0.05 && dtSec < 1.0) {
+                        double accelMps2 = Math.abs(rawKmh - egoSpeedKmh) / (dtSec * 3.6);
+                        if (accelMps2 > 15.0) {
+                            return; // Spike/glitch rejected
+                        }
+                    }
+                }
                 double prevSpeed = egoSpeedKmh;
-                egoSpeedKmh = location.getSpeed() * 3.6;
+                egoSpeedKmh = rawKmh;
                 speedTimestampNanos = measuredAt;
                 if (!Double.isFinite(prevSpeed)) {
                     Log.i(TAG, String.format(Locale.ROOT, "[GPS] First speed fix received: %.1f km/h (provider=%s)",
@@ -617,17 +637,23 @@ public final class MainActivity extends Activity {
         if (decisionTargetId != previousDecisionTargetId) {
             decisionEngine.resetTargetState();
             previousDecisionTargetId = decisionTargetId;
+            heldAlerts = Set.of();
+            alertsHoldUntilNanos = 0L;
+            heldAlertTargetId = decisionTargetId;
         }
         double decisionDistance = motion.distanceMeters();
         AdasDecisionEngine.Observation observation = new AdasDecisionEngine.Observation(
                 result.timestampNanos() / 1_000_000L, speed,
                 decisionDistance, motion.closingSpeedMps(),
                 motion.targetAreaPixels(), motion.visible());
-        AdasDecisionEngine.Decision decision = decisionEngine.update(observation,
-                new AdasDecisionEngine.LaneObservation(lane.centerOffset(),
-                        lane.confidence(), lane.available()));
+        AdasDecisionEngine.LaneObservation laneObservation =
+                (calibrationStatus == CalibrationStore.Status.UNCONFIGURED)
+                        ? new AdasDecisionEngine.LaneObservation(0.0, 0.0, false)
+                        : new AdasDecisionEngine.LaneObservation(lane.centerOffset(), lane.confidence(), lane.available());
+        AdasDecisionEngine.Decision decision = decisionEngine.update(observation, laneObservation);
         if (!decision.events().isEmpty()) {
             heldAlerts = decision.events();
+            heldAlertTargetId = decisionTargetId;
             alertsHoldUntilNanos = System.nanoTime() + 1_500_000_000L;
             for (AdasDecisionEngine.Alert alert : decision.events()) {
                 Log.w(TAG, String.format(Locale.ROOT,

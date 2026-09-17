@@ -50,6 +50,7 @@ public final class FrameConsumer implements AutoCloseable {
     }
 
     private void runLoop(Session current) {
+        int consecutiveFailures = 0;
         try {
             while (!current.cancelled) {
                 try {
@@ -61,6 +62,7 @@ public final class FrameConsumer implements AutoCloseable {
                         continue;
                     }
                     handler.onFrame(frame);
+                    consecutiveFailures = 0;
                     synchronized (this) {
                         lastTimestampNanos = frame.timestampNanos();
                         processedFrames++;
@@ -70,7 +72,12 @@ public final class FrameConsumer implements AutoCloseable {
                     Thread.currentThread().interrupt();
                     break;
                 } catch (RuntimeException failure) {
+                    consecutiveFailures++;
                     recordFailure(failure);
+                    if (consecutiveFailures >= 3) {
+                        // Break loop to trigger handler.onStopped() cleanup and self-healing restart
+                        break;
+                    }
                 }
             }
         } finally {

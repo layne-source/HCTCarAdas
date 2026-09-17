@@ -4,7 +4,14 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
+import android.graphics.Insets;
 import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Shader;
+import android.util.AttributeSet;
+import android.view.View;
+import android.view.WindowInsets;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Shader;
@@ -15,6 +22,7 @@ import java.util.Locale;
 
 /** Displays source-normalized detections in the same letterboxed viewport as the preview. */
 public final class VehicleOverlayView extends View {
+    private int bottomInsetPx = 0;
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint regionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -81,34 +89,64 @@ public final class VehicleOverlayView extends View {
         invalidate();
     }
 
+    public void setBottomInset(int bottomInsetPx) {
+        if (this.bottomInsetPx != bottomInsetPx) {
+            this.bottomInsetPx = bottomInsetPx;
+            invalidate();
+        }
+    }
+
+    public float getHoodY(float top, float height) {
+        float density = getResources().getDisplayMetrics().density;
+        float margin = 4f * density;
+        // Lower the hood reference baseline to 92% of the video frame (closer to the car's hood)
+        float baselineY = top + height * 0.92f;
+        if (bottomInsetPx > 0) {
+            float availableBottom = getHeight() - bottomInsetPx - margin;
+            return Math.min(baselineY, availableBottom);
+        }
+        return baselineY;
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        if (result == null) {
-            return;
-        }
-        float scale = Math.min((float) getWidth() / result.frameWidth(),
-                (float) getHeight() / result.frameHeight());
-        float width = result.frameWidth() * scale;
-        float height = result.frameHeight() * scale;
+
+        int frameWidth = result != null ? result.frameWidth()
+                : (calibration != null ? calibration.imageWidth() : 1280);
+        int frameHeight = result != null ? result.frameHeight()
+                : (calibration != null ? calibration.imageHeight() : 720);
+
+        float scale = Math.min((float) getWidth() / frameWidth,
+                (float) getHeight() / frameHeight);
+        float width = frameWidth * scale;
+        float height = frameHeight * scale;
         float left = (getWidth() - width) / 2f;
         float top = (getHeight() - height) / 2f;
-        drawLane(canvas, left, top, width, height);
-        if (calibration != null && calibration.isUsableFor(result.frameWidth(), result.frameHeight())
-                && calibrationStatus != CalibrationStore.Status.CALIBRATED) {
+
+        // Calibration baseline guidelines are always drawn during uncalibrated, wizard, or learning states
+        if (calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null) {
             Paint calibrationPaint = regionPaint;
             calibrationPaint.setColor(0xFFFFB74D);
             calibrationPaint.setPathEffect(null);
-            float horizonY = top + (float) calibration.horizonYNormalized() * height;
+            double normHorizon = (calibration != null)
+                    ? calibration.horizonYNormalized() : 0.438;
+            float horizonY = top + (float) normHorizon * height;
             canvas.drawLine(left, horizonY, left + width, horizonY, calibrationPaint);
             canvas.drawText("地平线", left + 8f * getResources().getDisplayMetrics().density,
                     Math.max(textPaint.getTextSize(), horizonY - 4f), textPaint);
 
             calibrationPaint.setColor(0xCCFFCC80);
-            float hoodY = top + height * 0.88f;
+            float hoodY = getHoodY(top, height);
             canvas.drawLine(left + width * 0.15f, hoodY, left + width * 0.85f, hoodY, calibrationPaint);
             canvas.drawText("机盖对齐参考线", left + width * 0.16f, hoodY - 4f, textPaint);
         }
+
+        if (result == null) {
+            return; // Only skip dynamic vehicle boxes and lanes when no detection result is available
+        }
+
+        drawLane(canvas, left, top, width, height);
         for (VehicleDetector.Detection detection : result.vehicles()) {
             boolean selected = tracking != null && detection.equals(tracking.detection());
             int color = selected ? selectedColor() : 0xFFB0BEC5;
@@ -156,9 +194,8 @@ public final class VehicleOverlayView extends View {
         if (lane == null || !lane.available()) {
             return; // Clean preview: never draw fake dashed lines or virtual corridors when lanes are absent
         }
-
-        float normNearY = 0.885f; // Starts just below the 0.88 hood alignment line
-        float hoodY = top + height * normNearY;
+        float hoodY = getHoodY(top, height);
+        float normNearY = Math.max(0.70f, Math.min(0.98f, (hoodY - top) / height));
 
         int lineColor;
         if (decision != null && (decision.collisionDanger() || decision.headwayCritical()

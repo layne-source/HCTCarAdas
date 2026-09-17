@@ -23,6 +23,7 @@ public final class CalibrationStore {
     private static final String KEY_PITCH = "pitch_degrees";
     private static final String KEY_STATUS = "calibration_status";
     private static final String KEY_PROGRESS = "learning_progress";
+    private static final String KEY_CAMERA_ID = "camera_hardware_id";
     private final SharedPreferences preferences;
 
     public CalibrationStore(Context context) {
@@ -47,6 +48,23 @@ public final class CalibrationStore {
             return null;
         }
     }
+    public CameraCalibration load(String expectedCameraId) {
+        if (expectedCameraId != null && !expectedCameraId.isEmpty()) {
+            String storedId = preferences.getString(KEY_CAMERA_ID, null);
+            if (storedId != null && !storedId.equals(expectedCameraId)) {
+                return null;
+            }
+        }
+        return load();
+    }
+
+    public Status loadStatus(String expectedCameraId) {
+        CameraCalibration calibration = load(expectedCameraId);
+        if (calibration == null) {
+            return Status.UNCONFIGURED;
+        }
+        return loadStatus();
+    }
 
     public Status loadStatus() {
         CameraCalibration calibration = load();
@@ -70,16 +88,20 @@ public final class CalibrationStore {
     }
 
     public void save(CameraCalibration calibration) {
-        save(calibration, Status.CALIBRATED, 100);
+        save(calibration, Status.CALIBRATED, 100, null);
     }
 
     public void save(CameraCalibration calibration, Status status, int progress) {
+        save(calibration, status, progress, null);
+    }
+
+    public void save(CameraCalibration calibration, Status status, int progress, String cameraId) {
         if (calibration == null) {
             throw new IllegalArgumentException("calibration must not be null");
         }
         Status targetStatus = status == null ? Status.CALIBRATED : status;
         int clampedProgress = Math.max(0, Math.min(100, progress));
-        preferences.edit()
+        SharedPreferences.Editor editor = preferences.edit()
                 .putInt(KEY_VERSION, VERSION)
                 .putInt(KEY_WIDTH, calibration.imageWidth())
                 .putInt(KEY_HEIGHT, calibration.imageHeight())
@@ -91,8 +113,11 @@ public final class CalibrationStore {
                         calibration.principalPointYNormalized()))
                 .putLong(KEY_PITCH, Double.doubleToRawLongBits(calibration.pitchDegrees()))
                 .putString(KEY_STATUS, targetStatus.name())
-                .putInt(KEY_PROGRESS, clampedProgress)
-                .apply();
+                .putInt(KEY_PROGRESS, clampedProgress);
+        if (cameraId != null && !cameraId.isEmpty()) {
+            editor.putString(KEY_CAMERA_ID, cameraId);
+        }
+        editor.apply();
     }
 
     public void saveStatus(Status status, int progress) {

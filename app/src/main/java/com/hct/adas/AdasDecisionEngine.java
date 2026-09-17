@@ -46,9 +46,13 @@ public final class AdasDecisionEngine {
     private static final double FCW_MIN_SPEED_KMH = 20.0;
     private static final double FCW_TTC_SECONDS = 2.4;
     private static final int FCW_REQUIRED_FRAMES = 3;
+    private static final long FCW_CONFIRM_MILLIS = 400L;
     private static final long FCW_COOLDOWN_MILLIS = 3_000L;
     private static final double HMW_DISTANCE_METERS = 8.0;
-    private static final double HMW_CRITICAL_DISTANCE_METERS = 4.5;
+    private static final double HMW_LOW_SPEED_THRESHOLD_KMH = 15.0;
+    private static final double HMW_THW_CAUTION_SECONDS = 1.2;
+    private static final double HMW_THW_CRITICAL_SECONDS = 0.6;
+    private static final double HMW_CRITICAL_DISTANCE_METERS = 4.0;
     private static final long HMW_CRITICAL_COOLDOWN_MILLIS = 4_000L;
     private static final double LVSA_MAX_STATIONARY_SPEED_KMH = 1.0;
     private static final double LVSA_MIN_DISTANCE_METERS = 3.0;
@@ -69,6 +73,7 @@ public final class AdasDecisionEngine {
     private static final long LDW_COOLDOWN_MILLIS = 6_000L;
 
     private int dangerousFrames;
+    private Long dangerSinceMillis;
     private long fcwCooldownUntil;
     private long hmwCriticalCooldownUntil;
     private long lvsaCooldownUntil;
@@ -92,16 +97,20 @@ public final class AdasDecisionEngine {
 
         if (collisionDanger) {
             dangerousFrames++;
+            if (dangerSinceMillis == null) {
+                dangerSinceMillis = observation.timestampMillis();
+            }
         } else {
             dangerousFrames = 0;
+            dangerSinceMillis = null;
         }
-        if (dangerousFrames >= FCW_REQUIRED_FRAMES
-                && observation.timestampMillis() >= fcwCooldownUntil) {
+        boolean fcwConfirmed = collisionDanger && dangerousFrames >= FCW_REQUIRED_FRAMES;
+        if (fcwConfirmed && observation.timestampMillis() >= fcwCooldownUntil) {
             events.add(Alert.FCW);
             fcwCooldownUntil = observation.timestampMillis() + FCW_COOLDOWN_MILLIS;
             dangerousFrames = 0;
+            dangerSinceMillis = null;
         }
-
         // Level 2 Proximity Alert: HMW_CRITICAL when <= 4.5m
         if (headwayCritical
                 && observation.timestampMillis() >= hmwCriticalCooldownUntil
@@ -128,20 +137,41 @@ public final class AdasDecisionEngine {
     }
 
     private boolean isHeadwayWarning(Observation observation) {
-        return observation.targetVisible() && Double.isFinite(observation.distanceMeters())
-                && observation.distanceMeters() > 0.0
-                && observation.distanceMeters() <= HMW_DISTANCE_METERS;
+        if (!observation.targetVisible() || !Double.isFinite(observation.distanceMeters())
+                || observation.distanceMeters() <= 0.0) {
+            return false;
+        }
+        double speedKmh = observation.egoSpeedKmh();
+        double distance = observation.distanceMeters();
+        if (Double.isFinite(speedKmh) && speedKmh >= 45.0) {
+            double speedMps = speedKmh / 3.6;
+            double thwSeconds = distance / speedMps;
+            return thwSeconds <= HMW_THW_CAUTION_SECONDS || distance <= HMW_DISTANCE_METERS;
+        }
+        return distance <= HMW_DISTANCE_METERS;
     }
 
     private boolean isHeadwayCritical(Observation observation) {
         if (!observation.targetVisible() || !Double.isFinite(observation.distanceMeters())
-                || !Double.isFinite(observation.egoSpeedKmh())
-                || observation.egoSpeedKmh() <= LVSA_MAX_STATIONARY_SPEED_KMH
                 || observation.distanceMeters() <= 0.0) {
             return false;
         }
-        return observation.distanceMeters() <= HMW_CRITICAL_DISTANCE_METERS
-                && (!Double.isFinite(observation.closingSpeedMps()) || observation.closingSpeedMps() >= -0.5);
+        if (Double.isFinite(observation.closingSpeedMps()) && observation.closingSpeedMps() < -0.5) {
+            return false; // Target pulling away, suppress proximity chime
+        }
+        double speedKmh = observation.egoSpeedKmh();
+        double distance = observation.distanceMeters();
+        if (Double.isFinite(speedKmh)) {
+            if (speedKmh <= LVSA_MAX_STATIONARY_SPEED_KMH) {
+                return false; // Stopped in traffic, suppress proximity chime
+            }
+            if (speedKmh >= HMW_LOW_SPEED_THRESHOLD_KMH) {
+                double speedMps = speedKmh / 3.6;
+                double thwSeconds = distance / speedMps;
+                return thwSeconds <= HMW_THW_CRITICAL_SECONDS || distance <= HMW_CRITICAL_DISTANCE_METERS;
+            }
+        }
+        return distance <= HMW_CRITICAL_DISTANCE_METERS;
     }
 
     private void updateStationaryState(Observation observation, EnumSet<Alert> events) {
@@ -251,6 +281,11 @@ public final class AdasDecisionEngine {
         }
         return warning;
     }
+    public void resetTargetState() {
+        dangerousFrames = 0;
+        dangerSinceMillis = null;
+        clearStationaryState();
+    }
 
     public void reset() {
         resetTargetState();
@@ -259,11 +294,5 @@ public final class AdasDecisionEngine {
         lvsaCooldownUntil = 0L;
         laneDepartureSince = null;
         ldwCooldownUntil = 0L;
-    }
-
-    /** Clears target-specific history while preserving lane continuity and alert cooldowns. */
-    public void resetTargetState() {
-        dangerousFrames = 0;
-        clearStationaryState();
     }
 }

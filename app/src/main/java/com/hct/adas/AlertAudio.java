@@ -33,6 +33,8 @@ public final class AlertAudio implements AutoCloseable {
     private ToneGenerator toneGenerator;
     private boolean playbackFailed;
     private boolean closed;
+    private int activePriority = 0;
+    private long priorityLockUntilNanos = 0L;
 
     public AlertAudio(Context context) throws IOException {
         audioManager = context.getSystemService(AudioManager.class);
@@ -131,6 +133,8 @@ public final class AlertAudio implements AutoCloseable {
     }
 
     public synchronized boolean testSound() {
+        activePriority = 1;
+        priorityLockUntilNanos = System.nanoTime() + 250_000_000L;
         return playSound(hmwSound, ToneGenerator.TONE_PROP_ACK, 250);
     }
 
@@ -138,16 +142,39 @@ public final class AlertAudio implements AutoCloseable {
         if (alerts == null || alerts.isEmpty()) {
             return true;
         }
+        int priority = 1;
+        int sound = lvsaSound;
+        int fallbackTone = ToneGenerator.TONE_PROP_ACK;
+        int durationMillis = 350;
+
         if (alerts.contains(AdasDecisionEngine.Alert.FCW)) {
-            return playSound(fcwSound, ToneGenerator.TONE_PROP_BEEP2, 600);
+            priority = 4;
+            sound = fcwSound;
+            fallbackTone = ToneGenerator.TONE_PROP_BEEP2;
+            durationMillis = 600;
+        } else if (alerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
+            priority = 3;
+            sound = hmwSound;
+            fallbackTone = ToneGenerator.TONE_PROP_BEEP;
+            durationMillis = 250;
+        } else if (alerts.contains(AdasDecisionEngine.Alert.LDW)) {
+            priority = 2;
+            sound = ldwSound;
+            fallbackTone = ToneGenerator.TONE_SUP_PIP;
+            durationMillis = 400;
         }
-        if (alerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
-            return playSound(hmwSound, ToneGenerator.TONE_PROP_BEEP, 250);
+
+        long now = System.nanoTime();
+        if (now < priorityLockUntilNanos && priority < activePriority) {
+            return false;
         }
-        if (alerts.contains(AdasDecisionEngine.Alert.LDW)) {
-            return playSound(ldwSound, ToneGenerator.TONE_SUP_PIP, 400);
+
+        boolean played = playSound(sound, fallbackTone, durationMillis);
+        if (played) {
+            activePriority = priority;
+            priorityLockUntilNanos = now + (long) durationMillis * 1_000_000L;
         }
-        return playSound(lvsaSound, ToneGenerator.TONE_PROP_ACK, 350);
+        return played;
     }
 
     private boolean playSound(int sound, int fallbackTone, int durationMillis) {
