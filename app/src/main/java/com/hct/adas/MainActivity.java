@@ -572,10 +572,16 @@ public final class MainActivity extends Activity {
                     calibration.imageWidth(), calibration.imageHeight()));
             calibrationView.setTextColor(0xFFFF8A80);
         } else if (calibrationStatus == CalibrationStore.Status.WIZARD_COMPLETED) {
+            if (showAngleOutOfRangeHint()) {
+                return;
+            }
             calibrationView.setText(getString(R.string.calibration_wizard_done,
                     calibration.cameraHeightMeters()));
             calibrationView.setTextColor(0xFF80DEEA);
         } else if (calibrationStatus == CalibrationStore.Status.CALIBRATING) {
+            if (showAngleOutOfRangeHint()) {
+                return;
+            }
             calibrationView.setText(getString(R.string.calibration_in_progress,
                     calibrationProgress));
             calibrationView.setTextColor(0xFF80DEEA);
@@ -585,6 +591,21 @@ public final class MainActivity extends Activity {
                     calibration.cameraHeightMeters(), calibration.pitchDegrees()));
             calibrationView.setTextColor(0xFFA5D6A7);
         }
+    }
+
+    /**
+     * A sustained run of geometric rejections cannot be waited out: the configured pitch keeps the
+     * lane ROI off the road, so the learner never even leaves the wizard state. Both pre-learning
+     * states must surface that, otherwise the user is told to keep driving forever.
+     */
+    private boolean showAngleOutOfRangeHint() {
+        if (autoCalibrationLearner.consecutiveGeometricRejections()
+                < AutoCalibrationLearner.GEOMETRIC_REJECTION_HINT_THRESHOLD) {
+            return false;
+        }
+        calibrationView.setText(R.string.calibration_angle_out_of_range);
+        calibrationView.setTextColor(0xFFFF8A80);
+        return true;
     }
 
     private synchronized void processAdasFrame(VehicleDetector.Result result,

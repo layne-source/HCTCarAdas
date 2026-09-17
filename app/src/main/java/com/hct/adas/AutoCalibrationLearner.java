@@ -19,6 +19,22 @@ public final class AutoCalibrationLearner {
         public static final VanishingPoint INVALID = new VanishingPoint(Double.NaN, Double.NaN, false);
     }
 
+    /**
+     * Why the latest observation did not enter the sample window. Only the geometric reasons can be
+     * fixed by re-aiming the camera; the rest are normal driving conditions that simply have to be
+     * waited out, so the UI must not confuse the two.
+     */
+    public enum Rejection {
+        /** The observation was accepted into the sample window. */
+        NONE,
+        /** Ego speed, lane quality or lane-centering gate. */
+        DRIVING_CONDITION,
+        /** Vanishing point fell outside the observable window. */
+        VANISHING_OUT_OF_RANGE,
+        /** The fixed lane ROI no longer covers usable road at the configured pitch. */
+        ROI_NOT_VISIBLE
+    }
+
     public static final double MIN_SPEED_KMH = 35.0;
     public static final double MAX_SPEED_KMH = 120.0;
     public static final double MIN_LANE_CONFIDENCE = 0.35;
@@ -48,6 +64,11 @@ public final class AutoCalibrationLearner {
     static final double MAX_ROI_NEAR_DISTANCE_METERS = 40.0;
     private static final String TAG = "HctAdasCore";
     private static final double PITCH_UPDATE_THRESHOLD_DEGREES = 0.05;
+    /**
+     * Consecutive geometric rejections after which the learner is treated as unable to converge at
+     * the configured pitch. At the 5 Hz analysis rate this is about one second of steady driving.
+     */
+    public static final int GEOMETRIC_REJECTION_HINT_THRESHOLD = 5;
     public static final double LANE_Y_TOP = LaneDepartureDetector.Y_TOP;
     public static final double LANE_Y_BOTTOM = LaneDepartureDetector.Y_BOTTOM;
 
@@ -57,6 +78,8 @@ public final class AutoCalibrationLearner {
     private double lastVanishingY = Double.NaN;
     private double lastVanishingX = Double.NaN;
     private double trackedPitch = Double.NaN;
+    private Rejection lastRejection = Rejection.NONE;
+    private int consecutiveGeometricRejections;
     public AutoCalibrationLearner() {
         this(CalibrationStore.Status.UNCONFIGURED, 0);
     }
@@ -79,43 +102,40 @@ public final class AutoCalibrationLearner {
 
         // Gating 1: ego speed must be in steady cruising range.
         if (!Double.isFinite(egoSpeedKmh) || egoSpeedKmh < MIN_SPEED_KMH || egoSpeedKmh > MAX_SPEED_KMH) {
-            resetSamples();
-            return new StepResult(currentCalibration, status, progress, Double.NaN, false);
+            return reject(currentCalibration, Rejection.DRIVING_CONDITION);
         }
 
         // Gating 2: lane observation quality.
         if (lane == null || !lane.available() || !Double.isFinite(lane.confidence())
                 || lane.confidence() < MIN_LANE_CONFIDENCE || lane.confidence() > 1.0) {
-            resetSamples();
-            return new StepResult(currentCalibration, status, progress, Double.NaN, false);
+            return reject(currentCalibration, Rejection.DRIVING_CONDITION);
         }
 
         // Gating 3: vehicle centered in lane to reject turning/lane changing.
         double centerOffset = lane.centerOffset();
         if (!Double.isFinite(centerOffset) || Math.abs(centerOffset) > 0.15) {
-            resetSamples();
-            return new StepResult(currentCalibration, status, progress, Double.NaN, false);
+            return reject(currentCalibration, Rejection.DRIVING_CONDITION);
         }
 
         // Gating 4: the fixed lane ROI must still look at road, not at the hood. A steeply pitched
         // camera can produce a plausible looking perspective fit while the ROI covers only 1-2 m,
         // so the learned pitch is never accepted without this physical check.
         if (!isLaneRoiVisible(currentCalibration)) {
-            resetSamples();
             Log.w(TAG, String.format(Locale.ROOT,
                     "[CALIB] Rejected sample: lane ROI collapsed to the hood at pitch=%.1f deg",
                     currentCalibration.pitchDegrees()));
-            return new StepResult(currentCalibration, status, progress, Double.NaN, false);
+            return reject(currentCalibration, Rejection.ROI_NOT_VISIBLE);
         }
 
         VanishingPoint vp = solveVanishingPoint(lane);
         if (!vp.valid()) {
-            resetSamples();
-            return new StepResult(currentCalibration, status, progress, Double.NaN, false);
+            return reject(currentCalibration, Rejection.VANISHING_OUT_OF_RANGE);
         }
 
         lastVanishingX = vp.x();
         lastVanishingY = vp.y();
+        lastRejection = Rejection.NONE;
+        consecutiveGeometricRejections = 0;
 
         if (status == CalibrationStore.Status.WIZARD_COMPLETED) {
             status = CalibrationStore.Status.CALIBRATING;
@@ -254,6 +274,22 @@ public final class AutoCalibrationLearner {
     }
 
     /**
+     * Records why an observation was dropped and returns the pending result. Consecutive geometric
+     * rejections are counted because they are the only ones a user can act on: waiting longer will
+     * never satisfy them, whereas a speed or lane-quality rejection resolves on its own.
+     */
+    private StepResult reject(CameraCalibration calibration, Rejection reason) {
+        resetSamples();
+        lastRejection = reason;
+        if (reason == Rejection.ROI_NOT_VISIBLE || reason == Rejection.VANISHING_OUT_OF_RANGE) {
+            consecutiveGeometricRejections++;
+        } else {
+            consecutiveGeometricRejections = 0;
+        }
+        return new StepResult(calibration, status, progress, Double.NaN, false);
+    }
+
+    /**
      * Ground distance of a normalized image row under the flat-road model, or NaN when the ray
      * leaves the valid ground region.
      */
@@ -301,6 +337,8 @@ public final class AutoCalibrationLearner {
         this.lastVanishingY = Double.NaN;
         this.lastVanishingX = Double.NaN;
         this.trackedPitch = Double.NaN;
+        this.lastRejection = Rejection.NONE;
+        this.consecutiveGeometricRejections = 0;
     }
 
     /** Invalidates in-flight samples after a capture gap without changing the configured status. */
@@ -312,6 +350,19 @@ public final class AutoCalibrationLearner {
         if (status == CalibrationStore.Status.CALIBRATING) {
             progress = 0;
         }
+    }
+
+    /** Reason the most recent observation was dropped, or {@link Rejection#NONE} if it was accepted. */
+    public synchronized Rejection lastRejection() {
+        return lastRejection;
+    }
+
+    /**
+     * Number of back-to-back rejections caused by camera geometry. A sustained count means the
+     * configured pitch puts the lane ROI off the road, which driving cannot fix.
+     */
+    public synchronized int consecutiveGeometricRejections() {
+        return consecutiveGeometricRejections;
     }
 
     public synchronized CalibrationStore.Status status() {

@@ -275,6 +275,88 @@ public final class AutoCalibrationLearnerTest {
                 AutoCalibrationLearner.isLaneRoiVisible(current));
     }
 
+    @Test
+    public void reportsGeometricRejectionsSoTheUiCanAskForReaiming() {
+        // A 20 deg pitch collapses the ROI at 1.25 m, and no amount of driving fixes that.
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        CameraCalibration steep = wizardAt(20.0);
+
+        for (int i = 0; i < AutoCalibrationLearner.GEOMETRIC_REJECTION_HINT_THRESHOLD; i++) {
+            learner.update(straightLane(), 60.0, steep);
+        }
+        assertEquals(AutoCalibrationLearner.Rejection.ROI_NOT_VISIBLE, learner.lastRejection());
+        assertEquals(AutoCalibrationLearner.GEOMETRIC_REJECTION_HINT_THRESHOLD,
+                learner.consecutiveGeometricRejections());
+
+        // A usable observation clears both the reason and the counter.
+        CameraCalibration normal = wizardAt(4.0);
+        learner.update(straightLane(), 60.0, normal);
+        assertEquals(AutoCalibrationLearner.Rejection.NONE, learner.lastRejection());
+        assertEquals(0, learner.consecutiveGeometricRejections());
+    }
+
+    @Test
+    public void reportsVanishingPointOutOfRangeAsGeometricToo() {
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        // Parallel lane edges: perspective is solvable but the width delta sanity check fails,
+        // which is a framing problem rather than a driving-condition problem.
+        LaneDepartureDetector.Observation parallel = new LaneDepartureDetector.Observation(
+                0.0, 0.85, true, 0.20, 0.80, 0.20, 0.80);
+
+        learner.update(parallel, 60.0, wizardAt(4.0));
+        assertEquals(AutoCalibrationLearner.Rejection.VANISHING_OUT_OF_RANGE,
+                learner.lastRejection());
+        assertEquals(1, learner.consecutiveGeometricRejections());
+    }
+
+    @Test
+    public void drivingConditionRejectionsDoNotCountAsGeometric() {
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        CameraCalibration normal = wizardAt(4.0);
+
+        // Too slow: the user just has to drive faster, so the hint must stay suppressed.
+        for (int i = 0; i < AutoCalibrationLearner.GEOMETRIC_REJECTION_HINT_THRESHOLD * 2; i++) {
+            learner.update(straightLane(), 20.0, normal);
+        }
+        assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION, learner.lastRejection());
+        assertEquals(0, learner.consecutiveGeometricRejections());
+
+        // A geometric rejection after that still starts counting from one.
+        learner.update(straightLane(), 60.0, wizardAt(20.0));
+        assertEquals(1, learner.consecutiveGeometricRejections());
+
+        // Lane quality and lane centering are driving conditions as well.
+        learner.update(new LaneDepartureDetector.Observation(0.0, 0.1, true,
+                0.38, 0.62, 0.20, 0.80), 60.0, normal);
+        assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION, learner.lastRejection());
+        assertEquals(0, learner.consecutiveGeometricRejections());
+
+        learner.update(new LaneDepartureDetector.Observation(0.25, 0.85, true,
+                0.38, 0.62, 0.20, 0.80), 60.0, normal);
+        assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION, learner.lastRejection());
+        assertEquals(0, learner.consecutiveGeometricRejections());
+    }
+
+    @Test
+    public void resetClearsRejectionTracking() {
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        learner.update(straightLane(), 60.0, wizardAt(20.0));
+        assertEquals(1, learner.consecutiveGeometricRejections());
+
+        learner.reset(CalibrationStore.Status.WIZARD_COMPLETED);
+        assertEquals(AutoCalibrationLearner.Rejection.NONE, learner.lastRejection());
+        assertEquals(0, learner.consecutiveGeometricRejections());
+    }
+
+    /** Straight-road observation whose vanishing point lands at y_vp = 0.48 (~1.3 deg), well inside the window. */
+    private static LaneDepartureDetector.Observation straightLane() {
+        return new LaneDepartureDetector.Observation(0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+    }
+
     private static CameraCalibration wizardAt(double pitchDegrees) {
         return CameraCalibration.fromWizard(1280, 720, 1.25, 90.0, pitchDegrees);
     }
