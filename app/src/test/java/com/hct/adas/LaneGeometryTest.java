@@ -120,6 +120,8 @@ public final class LaneGeometryTest {
                 left.centerOffsetNormalized() > 0.0);
         assertTrue(left.centerOffsetMeters() > 0.0);
         assertEquals(0.05 / width * LANE_WIDTH, left.centerOffsetMeters(), 1.0e-6);
+        assertEquals("lane centre must remain left of the image centre",
+                0.45, left.laneCenterImageX(), 1.0e-9);
         assertTrue(left.vehicleRightOfCenter());
         assertFalse(left.vehicleLeftOfCenter());
 
@@ -131,6 +133,8 @@ public final class LaneGeometryTest {
         assertTrue(right.centerOffsetNormalized() < 0.0);
         assertTrue(right.centerOffsetMeters() < 0.0);
         assertEquals(-0.05 / width * LANE_WIDTH, right.centerOffsetMeters(), 1.0e-6);
+        assertEquals("lane centre must remain right of the image centre",
+                0.55, right.laneCenterImageX(), 1.0e-9);
         assertTrue(right.vehicleLeftOfCenter());
         assertFalse(right.vehicleRightOfCenter());
     }

@@ -79,6 +79,58 @@ public final class LaneDepartureDetectorTest {
     }
 
     @Test
+    public void brighterSameSideLineDoesNotReplaceTrackedBoundary() {
+        LaneDepartureDetector detector = new LaneDepartureDetector();
+        LaneDepartureDetector.Observation first = detector.detect(
+                createSyntheticRoad(WIDTH, HEIGHT, 0.0), WIDTH, HEIGHT);
+        assertTrue(first.available());
+
+        byte[] next = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        dimLeftLane(next);
+        for (int y = (int) (HEIGHT * 0.50); y <= (int) (HEIGHT * 0.85); y++) {
+            drawStripe(next, WIDTH, HEIGHT, (int) (WIDTH * 0.10), y, 6, 240);
+        }
+
+        LaneDepartureDetector.Observation tracked = detector.detect(next, WIDTH, HEIGHT);
+        assertTrue(tracked.available());
+        assertTrue("same-side distractor must not replace the tracked left boundary",
+                tracked.leftTopX() > 0.30);
+    }
+
+    @Test
+    public void oneMissingEndpointStillPublishesActualWidthSamples() {
+        LaneDepartureDetector detector = new LaneDepartureDetector();
+        assertTrue(detector.detect(createSyntheticRoad(WIDTH, HEIGHT, 0.0), WIDTH, HEIGHT)
+                .available());
+
+        byte[] next = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        int firstSampleRow = (int) Math.round(LaneDepartureDetector.ROI_TOP_ROW * HEIGHT);
+        Arrays.fill(next, firstSampleRow * WIDTH, (firstSampleRow + 1) * WIDTH, (byte) 70);
+        LaneDepartureDetector.Observation observation = detector.detect(next, WIDTH, HEIGHT);
+
+        assertTrue(observation.available());
+        assertEquals(8, observation.widthSamples().size());
+        assertTrue(observation.widthSamples().get(0).rowY()
+                > LaneDepartureDetector.ROI_TOP_ROW);
+    }
+
+    @Test
+    public void threeDistantSightingsDoNotPublishSparseGeometry() {
+        LaneDepartureDetector detector = new LaneDepartureDetector();
+        byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        for (int i = 2; i < 8; i++) {
+            double rowY = LaneDepartureDetector.ROI_TOP_ROW
+                    + (LaneDepartureDetector.ROI_BOTTOM_ROW - LaneDepartureDetector.ROI_TOP_ROW)
+                    * i / 8.0;
+            int row = (int) Math.round(rowY * HEIGHT);
+            Arrays.fill(road, row * WIDTH, (row + 1) * WIDTH, (byte) 70);
+        }
+        LaneDepartureDetector.Observation observation = detector.detect(road, WIDTH, HEIGHT);
+        assertTrue(observation.available());
+        assertTrue(observation.widthSamples().isEmpty());
+    }
+
+    @Test
     public void widthSamplesRetainCurvedBoundarySightings() {
         byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
         for (int y = (int) (0.5 * HEIGHT); y <= (int) (0.85 * HEIGHT); y++) {
@@ -132,10 +184,25 @@ public final class LaneDepartureDetectorTest {
     }
 
     private static void drawStripe(byte[] nv21, int width, int height, int centerX, int y, int stripeWidth) {
+        drawStripe(nv21, width, height, centerX, y, stripeWidth, 220);
+    }
+
+    private static void drawStripe(byte[] nv21, int width, int height, int centerX, int y,
+                                   int stripeWidth, int luma) {
         int half = stripeWidth / 2;
         for (int x = centerX - half; x <= centerX + half; x++) {
             if (x >= 0 && x < width && y >= 0 && y < height) {
-                nv21[y * width + x] = (byte) 220; // Bright white stripe
+                nv21[y * width + x] = (byte) luma;
+            }
+        }
+    }
+
+    private static void dimLeftLane(byte[] nv21) {
+        for (int y = 0; y < HEIGHT; y++) {
+            for (int x = 0; x < WIDTH / 2; x++) {
+                if ((nv21[y * WIDTH + x] & 0xff) == 220) {
+                    nv21[y * WIDTH + x] = (byte) 160;
+                }
             }
         }
     }

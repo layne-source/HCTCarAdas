@@ -69,6 +69,11 @@ public final class LaneGeometry {
             return Double.isFinite(curvatureRadiusMeters);
         }
 
+        /** Image-space lane centre; vehicle offset has the opposite sign by definition. */
+        public double laneCenterImageX() {
+            return valid() ? 0.5 - centerOffsetNormalized : Double.NaN;
+        }
+
         /** True when the vehicle sits left of the lane centre, so the driver should move right. */
         public boolean vehicleLeftOfCenter() {
             return valid() && centerOffsetNormalized < 0.0;

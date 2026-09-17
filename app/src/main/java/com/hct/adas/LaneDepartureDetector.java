@@ -41,8 +41,10 @@ public final class LaneDepartureDetector {
     private static final double MIN_RIDGE_RESPONSE = 30.0;
     /** Response that maps to a per-sighting confidence of 1.0. */
     private static final double FULL_RIDGE_RESPONSE = 100.0;
-    /** Rows a width sample needs on both boundaries before it is reported. */
-    private static final double MIN_SAMPLE_SPAN = 0.26;
+    /** Vertical coverage required on both boundaries, allowing one missing endpoint row. */
+    private static final double MIN_SAMPLE_SPAN = 0.24;
+    /** Minimum number of paired, real sightings needed to publish lane geometry. */
+    private static final int MIN_WIDTH_SAMPLE_COUNT = 7;
     /** Both boundaries must clear this confidence before a width sample is published. */
     private static final double MIN_SAMPLE_CONFIDENCE = 0.30;
     /** Temporal blend applied to the published trapezoid when consecutive frames both see lanes. */
@@ -279,7 +281,7 @@ public final class LaneDepartureDetector {
             samples.add(new LaneGeometry.WidthSample(rowY, leftSample.x(), rightSample.x(),
                     Math.min(leftSample.confidence(), rightSample.confidence())));
         }
-        return samples;
+        return samples.size() >= MIN_WIDTH_SAMPLE_COUNT ? samples : List.of();
     }
 
     private static boolean hasSpan(BoundaryTrack track) {
@@ -296,7 +298,7 @@ public final class LaneDepartureDetector {
         if (previousBoundaryAtStart != null) {
             reference = previousBoundaryAtStart;
         }
-        boolean first = true;
+        boolean wideSearch = previousBoundaryAtStart == null;
         for (int i = 0; i < context.rows.length; i++) {
             double rowY = context.rows[i];
             int y = context.pixelRow(rowY);
@@ -306,9 +308,9 @@ public final class LaneDepartureDetector {
             if (Double.isFinite(predicted)) {
                 reference = Math.max(sideMin, Math.min(sideMax, predicted));
             }
-            double minX = first ? sideMin : Math.max(sideMin, reference - SEARCH_HALF_WIDTH);
-            double maxX = first ? sideMax : Math.min(sideMax, reference + SEARCH_HALF_WIDTH);
-            first = false;
+            double minX = wideSearch ? sideMin : Math.max(sideMin, reference - SEARCH_HALF_WIDTH);
+            double maxX = wideSearch ? sideMax : Math.min(sideMax, reference + SEARCH_HALF_WIDTH);
+            wideSearch = false;
             RidgeCandidate candidate = findRidge(context, y, context.rowBrightness[i],
                     minX, maxX);
             if (!candidate.found()) {

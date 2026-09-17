@@ -149,6 +149,17 @@ public final class AdasUiStatusMapperTest {
                 new LaneGeometry.LaneSnapshot(1L, 0.1, 0.7, 3.5, 900.0, 9)), 1.0e-6);
     }
 
+    @Test
+    public void laneDetailHidesUnavailableMetricValues() {
+        LaneGeometry.LaneSnapshot uncalibrated = new LaneGeometry.LaneSnapshot(
+                1L, 0.1, Double.NaN, Double.NaN, Double.NaN, 8);
+        assertEquals("", AdasUiStatusMapper.laneDetail(uncalibrated));
+        assertFalse(AdasUiStatusMapper.laneDetail(uncalibrated).contains("NaN"));
+        assertEquals(" · Offset +0.70 m (lane 3.5 m) · R 900 m",
+                AdasUiStatusMapper.laneDetail(
+                        new LaneGeometry.LaneSnapshot(1L, 0.1, 0.7, 3.5, 900.0, 8)));
+    }
+
     private static LaneGeometry.LaneSnapshot lane(double centerOffset, double radius) {
         return new LaneGeometry.LaneSnapshot(1L, centerOffset, centerOffset * 3.5, 3.5, radius, 9);
     }

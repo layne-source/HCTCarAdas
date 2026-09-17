@@ -1,13 +1,15 @@
 package com.hct.adas;
 
+import java.util.Locale;
+
 /**
  * Maps the decision engine output and the measured lane geometry onto the three driver-facing
  * readouts. This is presentation only: it never changes a threshold the decision engine uses, so the
  * safety-critical gating stays testable in one place and the wording can be tuned freely here.
  *
  * <p>Sign convention for the lane offset follows the vehicle frame published by
- * {@link LaneGeometry}: the offset is positive when the lane centre lies to the right of the vehicle,
- * that is when the vehicle itself sits in the left half of the lane and has to move right.
+ * {@link LaneGeometry}: the offset is positive when the vehicle sits to the right of the lane centre
+ * and therefore has to move left.
  */
 public final class AdasUiStatusMapper {
     /** Text shown while a judgement is still forming or blocked by missing inputs. */
@@ -191,5 +193,21 @@ public final class AdasUiStatusMapper {
             return Double.NaN;
         }
         return lane.centerOffsetMeters();
+    }
+
+    /** Numeric lane detail, omitted until calibrated metric geometry is available. */
+    public static String laneDetail(LaneGeometry.LaneSnapshot lane) {
+        if (lane == null || !lane.valid() || !Double.isFinite(lane.centerOffsetMeters())) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(String.format(Locale.ROOT,
+                " · Offset %+.2f m", lane.centerOffsetMeters()));
+        if (Double.isFinite(lane.laneWidthMeters())) {
+            builder.append(String.format(Locale.ROOT, " (lane %.1f m)", lane.laneWidthMeters()));
+        }
+        builder.append(lane.curvatureValid()
+                ? String.format(Locale.ROOT, " · R %.0f m", Math.abs(lane.curvatureRadiusMeters()))
+                : " · R straight");
+        return builder.toString();
     }
 }

@@ -585,25 +585,8 @@ public final class MainActivity extends Activity {
         AdasUiStatusMapper.LaneStatus laneStatus = AdasUiStatusMapper.lane(lane, laneSupported,
                 shown.laneWarning());
         return "\nFCWS " + status.riskText() + " (" + status.detail() + ")"
-                + "\nLDWS " + laneStatus.departure() + laneDetail(lane)
+                + "\nLDWS " + laneStatus.departure() + AdasUiStatusMapper.laneDetail(lane)
                 + "\nLKAS " + laneStatus.keeping();
-    }
-
-    /** Numeric lane detail: signed offset (right negative) and the average curvature radius. */
-    private String laneDetail(LaneGeometry.LaneSnapshot lane) {
-        if (lane == null || !lane.valid()) {
-            return "";
-        }
-        StringBuilder builder = new StringBuilder(String.format(Locale.ROOT,
-                " · Offset %+.2f", lane.centerOffsetMeters()));
-        builder.append(" m");
-        if (Double.isFinite(lane.laneWidthMeters())) {
-            builder.append(String.format(Locale.ROOT, " (lane %.1f m)", lane.laneWidthMeters()));
-        }
-        builder.append(lane.curvatureValid()
-                ? String.format(Locale.ROOT, " · R %.0f m", Math.abs(lane.curvatureRadiusMeters()))
-                : " · R straight");
-        return builder.toString();
     }
 
     /** Risk band of the current decision, used for the colour of the overlay text. */

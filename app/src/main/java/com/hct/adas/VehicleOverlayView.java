@@ -385,8 +385,7 @@ public final class VehicleOverlayView extends View {
         laneDrawHalfWidth = laneWidthNormalized() * 0.5;
         laneDrawNearRow = (hoodY - top) / height;
         laneDrawFarRow = LaneDepartureDetector.ROI_TOP_ROW;
-        float nearCenterX = left + width * 0.5f
-                + (float) laneSnapshot.centerOffsetNormalized() * width;
+        float nearCenterX = left + (float) laneSnapshot.laneCenterImageX() * width;
         float farCenterX = left + width * 0.5f + (nearCenterX - (left + width * 0.5f)) * FAR_SCALE;
         float farHalfWidth = nearHalfWidth * FAR_SCALE;
         float lineFarY = top + height * (float) LaneDepartureDetector.ROI_TOP_ROW;
@@ -473,7 +472,7 @@ public final class VehicleOverlayView extends View {
 
         // Lane centre marker against the image centre: the gap is the offset the text reports.
         float centerRowY = top + height * (float) LaneDepartureDetector.Y_BOTTOM;
-        float laneCenterX = left + (float) (0.5 + laneSnapshot.centerOffsetNormalized()) * width;
+        float laneCenterX = left + (float) laneSnapshot.laneCenterImageX() * width;
         float vehicleCenterX = left + width * 0.5f;
         boxPaint.setColor(lineColor);
         canvas.drawLine(vehicleCenterX, centerRowY - 10f * density, vehicleCenterX,
