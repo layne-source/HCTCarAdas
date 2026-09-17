@@ -134,7 +134,7 @@ public final class AdasUiStatusMapper {
      */
     public static LaneStatus lane(LaneGeometry.LaneSnapshot lane, boolean supported,
                                   boolean laneSteering) {
-        if (lane == null || !lane.valid()) {
+        if (!supported || lane == null || !lane.valid()) {
             String departure = supported ? "To Be Determined …" : "Not Calibrated";
             return new LaneStatus(departure, COLOR_INACTIVE,
                     "To Be Determined …", COLOR_INACTIVE);
@@ -190,6 +190,6 @@ public final class AdasUiStatusMapper {
         if (lane == null || !lane.valid() || !Double.isFinite(lane.laneWidthMeters())) {
             return Double.NaN;
         }
-        return lane.centerOffsetNormalized() * lane.laneWidthMeters();
+        return lane.centerOffsetMeters();
     }
 }

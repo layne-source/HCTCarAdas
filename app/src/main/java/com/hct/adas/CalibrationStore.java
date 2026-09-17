@@ -59,7 +59,7 @@ public final class CalibrationStore {
     public CameraCalibration load(String expectedCameraId) {
         if (expectedCameraId != null && !expectedCameraId.isEmpty()) {
             String storedId = preferences.getString(KEY_CAMERA_ID, null);
-            if (storedId != null && !storedId.equals(expectedCameraId)) {
+            if (!expectedCameraId.equals(storedId)) {
                 return null;
             }
         }
@@ -133,6 +133,8 @@ public final class CalibrationStore {
                 .putInt(KEY_PROGRESS, clampedProgress);
         if (cameraId != null && !cameraId.isEmpty()) {
             editor.putString(KEY_CAMERA_ID, cameraId);
+        } else {
+            editor.remove(KEY_CAMERA_ID);
         }
         editor.apply();
     }

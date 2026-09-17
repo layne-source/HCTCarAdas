@@ -67,6 +67,7 @@ public final class MainActivity extends Activity {
     private static final double STEEP_PITCH_WARNING_DEGREES = 14.0;
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
+    private volatile RuntimeException initializationFailure;
     private UsbCameraSource cameraSource;
     private TextureView previewView;
     private VehicleOverlayView overlayView;
@@ -197,7 +198,6 @@ public final class MainActivity extends Activity {
         frameDispatcher = new FrameDispatcher(2);
         frameConsumer = new FrameConsumer(frameDispatcher, new FrameConsumer.Handler() {
             private VehicleDetector detector;
-            private RuntimeException initializationFailure;
             private long nextDetectorRetryNanos;
 
             @Override
@@ -211,15 +211,13 @@ public final class MainActivity extends Activity {
                         return;
                     }
                 }
-                if (initializationFailure != null) {
-                    if (System.nanoTime() < nextDetectorRetryNanos) {
-                        throw initializationFailure;
-                    }
-                    initializationFailure = null;
+                if (System.nanoTime() < nextDetectorRetryNanos) {
+                    return;
                 }
                 if (detector == null) {
                     try {
                         detector = new LiteRtVehicleDetector(getAssets());
+                        initializationFailure = null;
                     } catch (IOException | RuntimeException | LinkageError failure) {
                         Log.e(TAG, "Vehicle model initialization failed", failure);
                         initializationFailure = new IllegalStateException(
@@ -253,7 +251,7 @@ public final class MainActivity extends Activity {
                             frame.nv21(), frame.width(), frame.height());
                     logLaneSampling(lane);
                     double speed = validSpeedKmh() ? egoSpeedKmh : Double.NaN;
-                    processAdasFrame(result, lane, speed, lanePitchDegrees(result.frameWidth(),
+                    processAdasFrame(result, lane, speed, learningPitchDegrees(result.frameWidth(),
                             result.frameHeight()), frameGeneration, sessionStart, false);
                 }
             }
@@ -266,7 +264,6 @@ public final class MainActivity extends Activity {
                     }
                 } finally {
                     detector = null;
-                    initializationFailure = null;
                     // Retain nextDetectorRetryNanos to prevent rapid spin-loop worker restarts
                 }
             }
@@ -454,8 +451,10 @@ public final class MainActivity extends Activity {
         boolean fresh = result != null && (simulator.isRunning()
                 || (result.timestampNanos() >= acceptFramesAfterNanos
                 && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
-        if (!simulator.isRunning() && !worker.lastError().isEmpty()) {
-            metricsView.setText(stream + "\n" + worker.lastError());
+        RuntimeException modelFailure = initializationFailure;
+        String workerError = modelFailure == null ? worker.lastError() : modelFailure.getMessage();
+        if (!simulator.isRunning() && !workerError.isEmpty()) {
+            metricsView.setText(stream + "\n" + workerError);
             overlayView.setResult(null, null);
         } else if (fresh) {
             fitPreview(result);
@@ -831,20 +830,22 @@ public final class MainActivity extends Activity {
         return builder.toString();
     }
 
-    /**
-     * Pitch used to interpret the newest frame: only a converged calibration may turn the lane geometry
-     * into metric output, because the metric readout is what the driver acts on. Before convergence the
-     * geometry is still reported in normalized form by the progress screen.
-     */
-    private double lanePitchDegrees(int frameWidth, int frameHeight) {
+    /** Configured pitch is available to the learner before calibration has converged. */
+    private double learningPitchDegrees(int frameWidth, int frameHeight) {
         CameraCalibration active = calibration;
-        if (active == null || !active.isUsableFor(frameWidth, frameHeight)) {
-            return Double.NaN;
-        }
-        if (calibrationStatus != CalibrationStore.Status.CALIBRATED) {
+        if (active == null || calibrationStatus == CalibrationStore.Status.UNCONFIGURED
+                || !active.isUsableFor(frameWidth, frameHeight)) {
             return Double.NaN;
         }
         return active.pitchDegrees();
+    }
+
+    /** Metric output remains gated on a converged calibration. */
+    private double lanePitchDegrees(int frameWidth, int frameHeight) {
+        if (calibrationStatus != CalibrationStore.Status.CALIBRATED) {
+            return Double.NaN;
+        }
+        return learningPitchDegrees(frameWidth, frameHeight);
     }
 
     private synchronized void processAdasFrame(VehicleDetector.Result result,
@@ -890,6 +891,7 @@ public final class MainActivity extends Activity {
                     String currentId = cameraSource != null ? cameraSource.currentCameraId() : "";
                     calibrationStore.save(step.calibration(), step.status(), step.progressPercent(), currentId);
                 }
+                postCalibrationOverlay(frameGeneration);
             } else if (step.status() != calibrationStatus || step.progressPercent() != calibrationProgress) {
                 calibrationStatus = step.status();
                 calibrationProgress = step.progressPercent();
@@ -1085,7 +1087,7 @@ public final class MainActivity extends Activity {
             public void onFrame(AdasSimulator.SimFrame simFrame) {
                 statusView.setText("【室内模拟】" + simFrame.description());
                 processAdasFrame(simFrame.detections(), simFrame.lane(), simFrame.speedKmh(),
-                        lanePitchDegrees(simFrame.detections().frameWidth(),
+                        learningPitchDegrees(simFrame.detections().frameWidth(),
                                 simFrame.detections().frameHeight()),
                         resultsGeneration, acceptFramesAfterNanos, true);
             }
@@ -1303,6 +1305,7 @@ public final class MainActivity extends Activity {
         } else {
             calibrationStore.save(next, calibrationStatus, 0, currentId);
         }
+        overlayView.setCalibration(calibration, calibrationStatus);
         updateCalibrationStatus(null);
     }
 
@@ -1326,6 +1329,7 @@ public final class MainActivity extends Activity {
             calibrationStatus = calibrationStore.loadStatus();
             calibrationProgress = calibrationStore.loadProgress();
             autoCalibrationLearner.reset(calibrationStatus);
+            overlayView.setCalibration(calibration, calibrationStatus);
             updateCalibrationStatus(null);
             return;
         }

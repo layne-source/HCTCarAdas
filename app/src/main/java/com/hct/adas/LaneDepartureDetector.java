@@ -9,10 +9,9 @@ import java.util.List;
  * bright-ridge (second derivative) response with per-row local contrast normalisation, which keeps
  * shaded, tunnel and over-exposed asphalt usable where a fixed absolute threshold is not.
  *
- * <p>Each boundary keeps its identity across rows and frames by tracking the ridge nearest to the
- * previous sighting, starting from the edge closest to the image centre. That ordering is what stops
- * a neighbouring lane line, a guard rail or a road seam from being adopted as the ego lane edge: the
- * ego lane edges are always the innermost bright ridges on each side of the vanishing point.
+ * <p>Each boundary starts in its own image half, then follows the strongest ridge in a narrow
+ * window around the previous sighting. This limits cross-boundary jumps; brightness alone cannot
+ * distinguish all neighbouring markings, guard rails or road seams.
  *
  * <p>The detection reports two things: the legacy four-point trapezoid (kept so the existing overlay,
  * simulator and learner contracts stay valid) and the per-row width samples that the calibration
@@ -36,8 +35,6 @@ public final class LaneDepartureDetector {
     private static final int SAMPLE_ROWS = 9;
     /** Half-width of the per-row boundary search window around the previous sighting. */
     private static final double SEARCH_HALF_WIDTH = 0.07;
-    /** Widest a single search step may look when no previous sighting exists yet. */
-    private static final double INITIAL_SEARCH_HALF_WIDTH = 0.34;
     /** Neighbouring bright pixels counted into one ridge before the second derivative is taken. */
     private static final double RIDGE_HALF_SPAN = 0.005;
     /** Ridge response above the local row contrast that counts as a lane marking. */
@@ -86,6 +83,8 @@ public final class LaneDepartureDetector {
 
     /** One frame of boundary sightings: a straight fit plus the rows it was actually seen on. */
     private static final class BoundaryTrack {
+        private record Sighting(double x, double rowY, double confidence) { }
+        final List<Sighting> sightings = new ArrayList<>(SAMPLE_ROWS);
         double sumW;
         double sumWx;
         double sumWy;
@@ -115,6 +114,7 @@ public final class LaneDepartureDetector {
             }
             maxY = y;
             lastConfidence = confidenceOf(ridge);
+            sightings.add(new Sighting(x, y, lastConfidence));
             lastRowY = y;
             lastX = x;
         }
@@ -149,10 +149,12 @@ public final class LaneDepartureDetector {
         }
 
         LaneGeometry.BoundarySample sampleAt(double rowY) {
-            double x = xAt(rowY);
-            return Double.isFinite(x)
-                    ? new LaneGeometry.BoundarySample(x, lastConfidence)
-                    : LaneGeometry.BoundarySample.NONE;
+            for (Sighting sighting : sightings) {
+                if (Math.abs(sighting.rowY() - rowY) < 1.0e-9) {
+                    return new LaneGeometry.BoundarySample(sighting.x(), sighting.confidence());
+                }
+            }
+            return LaneGeometry.BoundarySample.NONE;
         }
     }
 
@@ -285,8 +287,7 @@ public final class LaneDepartureDetector {
     }
 
     /**
-     * Tracks one lane boundary across the sampled rows, starting from the bright ridge closest to
-     * the image centre and then following the ridge nearest to the previous row's sighting.
+     * Tracks the strongest ridge on one image half, then narrows the search around each sighting.
      */
     private BoundaryTrack trackBoundary(FrameContext context, boolean leftSide, Observation previous) {
         BoundaryTrack track = new BoundaryTrack();
@@ -299,23 +300,23 @@ public final class LaneDepartureDetector {
         for (int i = 0; i < context.rows.length; i++) {
             double rowY = context.rows[i];
             int y = context.pixelRow(rowY);
-            double halfWidth = first ? INITIAL_SEARCH_HALF_WIDTH : SEARCH_HALF_WIDTH;
-            double minX = Math.max(0.02, leftSide ? 0.02 : reference - halfWidth);
-            double maxX = Math.min(0.98, leftSide ? reference + halfWidth : 0.98);
+            double sideMin = leftSide ? 0.02 : 0.5;
+            double sideMax = leftSide ? 0.5 : 0.98;
+            double predicted = track.xAt(rowY);
+            if (Double.isFinite(predicted)) {
+                reference = Math.max(sideMin, Math.min(sideMax, predicted));
+            }
+            double minX = first ? sideMin : Math.max(sideMin, reference - SEARCH_HALF_WIDTH);
+            double maxX = first ? sideMax : Math.min(sideMax, reference + SEARCH_HALF_WIDTH);
+            first = false;
             RidgeCandidate candidate = findRidge(context, y, context.rowBrightness[i],
                     minX, maxX);
             if (!candidate.found()) {
                 continue;
             }
             double x = candidate.x() / (double) context.width;
-            if (leftSide) {
-                x = Math.min(x, 0.5);
-            } else {
-                x = Math.max(x, 0.5);
-            }
             track.add(x, rowY, candidate.ridge());
             reference = x;
-            first = false;
         }
         return track;
     }

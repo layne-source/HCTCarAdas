@@ -490,6 +490,54 @@ public final class AutoCalibrationLearnerTest {
                 Math.abs(insideBracket.lastSolvedPitchDegrees() - wizard.pitchDegrees()) > 3.5);
     }
 
+    @Test
+    public void stablePitchFiveDegreesAwayDoesNotConverge() {
+        CameraCalibration wizard = wizardAt(8.0);
+        LaneDepartureDetector.Observation lane = laneAt(13.0, wizard);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        AutoCalibrationLearner.StepResult step = null;
+        for (int i = 0; i < AutoCalibrationLearner.REQUIRED_CONVERGENCE_SAMPLES + 10; i++) {
+            step = learner.update(lane, 60.0, wizard, 8.0, 1280, 720);
+            assertFalse(step.calibrationUpdated());
+        }
+        assertNotNull(step);
+        assertEquals(CalibrationStore.Status.CALIBRATING, step.status());
+        assertEquals(AutoCalibrationLearner.Rejection.OBSERVATION_INCOHERENT,
+                learner.lastRejection());
+        assertEquals(99, step.progressPercent());
+    }
+
+    @Test
+    public void missingWidthsPausePitchWindowWithoutUsingLegacyFit() {
+        CameraCalibration wizard = wizardAt(8.0);
+        LaneDepartureDetector.Observation lane = laneAt(8.0, wizard);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        for (int i = 0; i < 20; i++) {
+            learner.update(lane, 60.0, wizard, 8.0, 1280, 720);
+        }
+        int progress = learner.progress();
+        LaneDepartureDetector.Observation missing = new LaneDepartureDetector.Observation(
+                lane.centerOffset(), lane.confidence(), true, lane.leftTopX(), lane.rightTopX(),
+                lane.leftBottomX(), lane.rightBottomX());
+        learner.update(missing, 60.0, wizard, 8.0, 1280, 720);
+        assertEquals(progress, learner.progress());
+        assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION, learner.lastRejection());
+    }
+
+    @Test
+    public void pitchSolveUsesActualRowsWhenFarEndpointIsMissing() {
+        CameraCalibration wizard = wizardAt(8.0);
+        LaneDepartureDetector.Observation lane = laneAt(8.0, wizard);
+        lane = lane.withWidthSamples(lane.widthSamples().subList(1, lane.widthSamples().size()));
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        learner.update(lane, 60.0, wizard, 8.0, 1280, 720);
+        assertEquals(AutoCalibrationLearner.Rejection.NONE, learner.lastRejection());
+        assertEquals(8.0, learner.lastSolvedPitchDegrees(), 0.05);
+    }
+
     /** Synthetic lane whose edges imply the given true pitch, on the real ROI rows. */
     private static LaneDepartureDetector.Observation laneAt(double truePitchDegrees,
                                                             CameraCalibration wizard) {

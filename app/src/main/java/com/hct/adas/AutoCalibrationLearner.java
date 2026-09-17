@@ -207,6 +207,10 @@ public final class AutoCalibrationLearner {
             return reject(currentCalibration, Rejection.ROI_NOT_VISIBLE, false);
         }
 
+        // A temporarily missing width sample must not mix legacy vanishing rows into a pitch window.
+        if (Double.isFinite(pitchDegrees) && !lane.hasWidthSamples()) {
+            return reject(currentCalibration, Rejection.DRIVING_CONDITION, true);
+        }
         boolean pitchPath = Double.isFinite(pitchDegrees) && frameWidth > 0 && frameHeight > 0
                 && lane.hasWidthSamples();
         double observation;
@@ -277,6 +281,12 @@ public final class AutoCalibrationLearner {
             if (samples.size() >= REQUIRED_CONVERGENCE_SAMPLES) {
                 // Recomputed once the window is full so the aggregation sees every sample.
                 windowCentre = impliedPath ? median(samples) : mean(samples);
+                if (impliedPath && Math.abs(windowCentre - currentCalibration.pitchDegrees())
+                        > MAX_PITCH_DEVIATION_DEGREES) {
+                    lastImpliedPitch = windowCentre;
+                    lastRejection = Rejection.OBSERVATION_INCOHERENT;
+                    return new StepResult(currentCalibration, status, progress, windowCentre, false);
+                }
                 double spread = impliedPath ? medianAbsoluteDeviation(samples)
                         : standardDeviation(samples, windowCentre);
                 boolean converged = impliedPath
@@ -358,9 +368,8 @@ public final class AutoCalibrationLearner {
      * not replace the configured pitch, because the configure-then-verify chain keeps the persisted
      * value free of the prior's bias.
      *
-     * <p>The near/far width ratio is evaluated as well, but only as an identity check on the tracked
-     * boundaries: on a flat road that ratio is pitch-independent by construction, so a value far from
-     * the model's means the two tracked edges do not bound one lane.
+     * <p>The near/far width ratio supplies the pitch measurement after the absolute width has
+     * passed the ego-lane plausibility check.
      */
     private double impliedPitchDegrees(LaneDepartureDetector.Observation lane,
                                        CameraCalibration calibration,
@@ -369,6 +378,13 @@ public final class AutoCalibrationLearner {
         double farRow = LaneDepartureDetector.ROI_TOP_ROW;
         LaneGeometry.WidthSample near = sampleAtRow(lane, nearRow);
         LaneGeometry.WidthSample far = sampleAtRow(lane, farRow);
+        if (near == null || far == null || near.rowY() <= far.rowY()) {
+            lastMeasuredRatio = Double.NaN;
+            lastModelRatio = Double.NaN;
+            return Double.NaN;
+        }
+        nearRow = near.rowY();
+        farRow = far.rowY();
         double measuredRatio = LaneGeometry.widthRatioMeasured(near, far);
         double modelRatio = LaneGeometry.widthRatioModel(calibration, nearRow, farRow,
                 calibration.pitchDegrees(), LaneGeometry.DEFAULT_LANE_WIDTH_METERS,
@@ -397,7 +413,7 @@ public final class AutoCalibrationLearner {
         // Past that horizon the depression angle changes sign, the ratio stops being monotonic in
         // pitch, and the solve would either fail or invert to a nonsense angle.
         double horizonPitch = horizonPitchDegrees(calibration,
-                LaneDepartureDetector.ROI_TOP_ROW, frameHeight);
+                farRow, frameHeight);
         double lowerBound = Math.max(calibration.pitchDegrees() - PITCH_SOLVE_RANGE_DEGREES,
                 horizonPitch);
         double upperBound = Math.max(calibration.pitchDegrees() + PITCH_SOLVE_RANGE_DEGREES,

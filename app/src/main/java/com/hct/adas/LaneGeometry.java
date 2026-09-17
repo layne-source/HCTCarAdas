@@ -7,8 +7,8 @@ package com.hct.adas;
  * [0, 1] and {@code y} grows downwards, matching the detector. Canonical ground coordinates are
  * {@code Z} forwards and {@code X} to the right of the vehicle, in metres, so a positive
  * {@code X} means the point is to the right of the camera optical axis. Lateral distance uses the
- * pinhole small-angle relation {@code X = (x - 0.5) * Z / f}, which cancels the unknown horizontal
- * principal point and yaw as long as the camera looks along the vehicle axis.
+ * pinhole relation {@code X = (x - 0.5) * cameraDepth / f}, assuming a centered principal point
+ * and a camera aligned with the vehicle axis in yaw.
  *
  * <p>The vertical focal length {@code f_y} is height-normalized (image height = 1) while the
  * horizontal one is width-normalized (image width = 1), so {@code f_x = f_y * height / width}.
@@ -98,7 +98,11 @@ public final class LaneGeometry {
             return Double.NaN;
         }
         double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
-        return fx > 0.0 ? (x - 0.5) * zMeters / fx : Double.NaN;
+        double pitch = Math.toRadians(calibration.pitchDegrees());
+        double cameraDepth = zMeters * Math.cos(pitch)
+                + calibration.cameraHeightMeters() * Math.sin(pitch);
+        return fx > 0.0 && cameraDepth > 0.0
+                ? (x - 0.5) * cameraDepth / fx : Double.NaN;
     }
 
     /** Horizontal focal length normalized by image width, so x in [0, 1] maps linearly. */
@@ -124,11 +128,9 @@ public final class LaneGeometry {
     /**
      * Normalized image width of a lane of the given physical width, as seen at one image row.
      *
-     * <p>A ground point at lateral offset {@code X} and depth {@code Z} images at
-     * {@code x = 0.5 + f_x · X / Z}, and the row looking at that depth satisfies
-     * {@code Z = H / tan(theta)} with {@code theta} the depression angle of the row. Substituting the
-     * depth gives {@code w = W · f_x · sin(theta) / H}: the width depends on the row only through the
-     * depression angle, grows with pitch, and is linear in the (uncertain) focal length.
+     * <p>For pitch alpha and row-ray angle beta, camera depth is
+     * {@code H * cos(beta) / sin(alpha + beta)}. Thus normalized width is
+     * {@code W * f_x * sin(alpha + beta) / (H * cos(beta))}.
      *
      * <p>Height and horizontal focal length are therefore the two error sources of any absolute lane
      * width measurement, which is why the calibrated mounting angle is not replaced by this model.
@@ -153,12 +155,10 @@ public final class LaneGeometry {
             return Double.NaN;
         }
         double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
-        return laneWidthMeters * fx * sin / height;
+        return laneWidthMeters * fx * sin / (height * Math.cos(beta));
     }
 
-    /** Model ratio between the two rows. See {@link #widthRatioMeasured} for what it can and cannot
-     * detect: on a flat road this ratio is independent of pitch by construction, so it is an identity
-     * check rather than a pitch sensor. */
+    /** Model ratio between two rows; physical lane width and camera height cancel. */
     public static double widthRatioModel(CameraCalibration calibration, double nearRow,
                                          double farRow, double pitchDegrees, double laneWidthMeters,
                                          int frameWidth, int frameHeight) {
@@ -178,11 +178,8 @@ public final class LaneGeometry {
     /**
      * Ratio of the two measured widths.
      *
-     * <p>Under the flat-road model this ratio depends only on the two image rows and the vertical
-     * focal length, not on the camera pitch: a steeper camera compresses both widths by the same
-     * factor. It is therefore <em>not</em> a pitch measurement. What it does detect is a boundary
-     * mistake, because the width prior is only valid once both tracked edges really bound the ego
-     * lane; a neighbouring lane line or a road seam moves the ratio well outside the expected band.
+     * <p>Under the flat-road model the ratio depends on pitch, image rows and vertical focal length.
+     * It is meaningful only when both tracked boundaries belong to the same constant-width lane.
      */
     public static double widthRatioMeasured(WidthSample near, WidthSample far) {
         if (near == null || far == null) {
@@ -199,7 +196,7 @@ public final class LaneGeometry {
 
     /**
      * Inverts the lane width model to obtain the pitch that would make the two lane edges sit
-     * {@code laneWidthMeters} apart at {@code rowY}. The model decreases monotonically with pitch
+     * {@code laneWidthMeters} apart at {@code rowY}. The model increases monotonically with pitch
      * over the supported mounting range, so a plain bisection is enough and cannot run away.
      *
      * <p>Accuracy is bounded by the uncertainty of the lane width prior (about 10%) and of the focal
@@ -250,11 +247,10 @@ public final class LaneGeometry {
     /**
      * Recovers the pitch from the measured near/far lane width ratio.
      *
-     * <p>With {@code w = W · f_x · sin(theta) / H} the ratio between the two rows is
-     * {@code sin(theta_near) / sin(theta_far)}, so the physical lane width, the camera height and the
-     * focal length all cancel. That makes this the most robust pitch observable available from lane
-     * lines, and it is sensitive: over the supported mounting range the ratio moves roughly 10% per
-     * degree. The model decreases monotonically with pitch here, so a bisection is enough.
+     * <p>The ratio is {@code sin(theta_near) * cos(beta_far)
+     * / (sin(theta_far) * cos(beta_near))}. Physical lane width, camera height and horizontal focal
+     * length cancel; vertical focal length still determines beta. The ratio decreases monotonically
+     * with pitch over the supported bracket, so bisection is sufficient.
      *
      * @return the solved pitch in degrees, or NaN when no pitch in the bracket reproduces the ratio
      */
@@ -296,7 +292,7 @@ public final class LaneGeometry {
     /**
      * Physical lane width implied by a measurement at the configured pitch, used to report the metric
      * offset and to detect a boundary that is not the ego lane edge. This is the exact inverse of
-     * {@link #laneWidthModelMeters}: {@code W = w · H / (f_x · sin(theta))}.
+     * {@link #laneWidthModelMeters}: {@code W = w * H * cos(beta) / (f_x * sin(theta))}.
      */
     public static double laneWidthFromSample(CameraCalibration calibration, WidthSample sample,
                                              double pitchDegrees, int frameWidth, int frameHeight) {
@@ -322,7 +318,7 @@ public final class LaneGeometry {
         if (fx <= 0.0) {
             return Double.NaN;
         }
-        return width * height / (fx * sin);
+        return width * height * Math.cos(beta) / (fx * sin);
     }
 
     /**
@@ -347,7 +343,8 @@ public final class LaneGeometry {
         double radius = curvatureRadiusMeters(calibration, pitchDegrees, samples,
                 frameWidth, frameHeight);
         return new LaneSnapshot(timestampNanos, vehicleOffsetNormalized,
-                Double.isFinite(laneWidth) ? vehicleOffsetNormalized * laneWidth : Double.NaN,
+                Double.isFinite(laneWidth)
+                        ? vehicleOffsetNormalized / nearSample.widthPixels() * laneWidth : Double.NaN,
                 laneWidth, radius, samples == null ? 0 : samples.size());
     }
 
@@ -361,7 +358,8 @@ public final class LaneGeometry {
     public static double curvatureRadiusMeters(CameraCalibration calibration, double pitchDegrees,
                                                java.util.List<WidthSample> samples,
                                                int frameWidth, int frameHeight) {
-        if (calibration == null || samples == null || samples.size() < 4) {
+        if (calibration == null || !Double.isFinite(pitchDegrees)
+                || samples == null || samples.size() < 4) {
             return Double.NaN;
         }
         double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
@@ -417,11 +415,8 @@ public final class LaneGeometry {
         }
         double z = CURVATURE_EVALUATION_METERS;
         double slope = 2.0 * a * z + b;
-        // The fit runs in screen-based ground coordinates (X to the right) while the published radius
-        // is signed in the world frame (X to the left). A road curving left puts the lane centre
-        // further right on screen as depth grows - a positive fit coefficient - and must come out as a
-        // negative radius, which is also the ISO 8855 sign convention.
-        double radius = Math.pow(1.0 + slope * slope, 1.5) / (-2.0 * a);
+        // X grows to the right: positive quadratic curvature means a right turn.
+        double radius = Math.pow(1.0 + slope * slope, 1.5) / (2.0 * a);
         return Double.isFinite(radius) && radius != 0.0 ? radius : Double.NaN;
     }
 
@@ -469,7 +464,7 @@ public final class LaneGeometry {
         return new double[] {m[0][3], m[1][3], m[2][3]};
     }
 
-    /** Convenience for direction text: positive curvature means the road turns left. */
+    /** Convenience for direction text: positive curvature means the road turns right. */
     public static String curveDirection(double curvatureRadiusMeters) {
         if (!Double.isFinite(curvatureRadiusMeters)) {
             return "";

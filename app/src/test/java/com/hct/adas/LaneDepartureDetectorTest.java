@@ -46,6 +46,64 @@ public final class LaneDepartureDetectorTest {
                 Math.abs(observation.centerOffset()) > 0.10);
     }
 
+    @Test
+    public void missingRowsAreNotReplacedByFittedSamples() {
+        byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        int row = (int) Math.round(0.68 * HEIGHT);
+        Arrays.fill(road, row * WIDTH, (row + 1) * WIDTH, (byte) 70);
+        LaneDepartureDetector.Observation observation = new LaneDepartureDetector().detect(
+                road, WIDTH, HEIGHT);
+        assertTrue(observation.available());
+        assertEquals(8, observation.widthSamples().size());
+        for (LaneGeometry.WidthSample sample : observation.widthSamples()) {
+            assertTrue(Math.abs(sample.rowY() - row / (double) HEIGHT) > 1.0e-9);
+        }
+    }
+
+    @Test
+    public void brighterRightBoundaryDoesNotReplaceLeftBoundary() {
+        byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        for (int y = 0; y < HEIGHT; y++) {
+            for (int x = 0; x < WIDTH / 2; x++) {
+                if ((road[y * WIDTH + x] & 0xff) == 220) {
+                    road[y * WIDTH + x] = (byte) 160;
+                }
+            }
+        }
+        LaneDepartureDetector.Observation observation = new LaneDepartureDetector().detect(
+                road, WIDTH, HEIGHT);
+        assertTrue(observation.available());
+        assertTrue(observation.leftBottomX() < 0.3);
+        assertTrue(observation.rightBottomX() > 0.7);
+        assertEquals(9, observation.widthSamples().size());
+    }
+
+    @Test
+    public void widthSamplesRetainCurvedBoundarySightings() {
+        byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        for (int y = (int) (0.5 * HEIGHT); y <= (int) (0.85 * HEIGHT); y++) {
+            double t = (y / (double) HEIGHT - 0.54) / 0.28;
+            int shift = (int) Math.round(0.04 * t * t * WIDTH);
+            byte[] row = Arrays.copyOfRange(road, y * WIDTH, (y + 1) * WIDTH);
+            Arrays.fill(road, y * WIDTH, (y + 1) * WIDTH, (byte) 70);
+            for (int x = 0; x + shift < WIDTH; x++) {
+                road[y * WIDTH + x + shift] = row[x];
+            }
+        }
+        LaneDepartureDetector.Observation observation = new LaneDepartureDetector().detect(
+                road, WIDTH, HEIGHT);
+        assertEquals(9, observation.widthSamples().size());
+        var first = observation.widthSamples().get(0);
+        var middle = observation.widthSamples().get(4);
+        var last = observation.widthSamples().get(8);
+        double firstCenter = (first.leftX() + first.rightX()) / 2.0;
+        double middleCenter = (middle.leftX() + middle.rightX()) / 2.0;
+        double lastCenter = (last.leftX() + last.rightX()) / 2.0;
+        double fraction = (middle.rowY() - first.rowY()) / (last.rowY() - first.rowY());
+        assertTrue(Math.abs(middleCenter - (firstCenter + fraction * (lastCenter - firstCenter)))
+                > 0.004);
+    }
+
     private static byte[] createSyntheticRoad(int width, int height, double lateralShift) {
         int ySize = width * height;
         byte[] nv21 = new byte[ySize * 3 / 2];

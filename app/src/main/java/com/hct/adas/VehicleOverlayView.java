@@ -454,7 +454,8 @@ public final class VehicleOverlayView extends View {
      */
     private void drawLaneReadout(Canvas canvas, float left, float top, float width, float height,
                                  int lineColor) {
-        if (laneSnapshot == null || !laneSnapshot.valid()) {
+        if (laneSnapshot == null || !laneSnapshot.valid()
+                || !Double.isFinite(laneSnapshot.centerOffsetMeters())) {
             return;
         }
         float density = getResources().getDisplayMetrics().density;

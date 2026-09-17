@@ -133,6 +133,10 @@ public final class AdasUiStatusMapperTest {
         assertEquals("Not Calibrated", status.departure());
         assertEquals("To Be Determined …", status.keeping());
         assertFalse(status.departure().contains("Keep"));
+        AdasUiStatusMapper.LaneStatus measured = AdasUiStatusMapper.lane(lane(0.2, 120.0),
+                false, true);
+        assertEquals("Not Calibrated", measured.departure());
+        assertEquals("To Be Determined …", measured.keeping());
     }
 
     @Test
@@ -141,6 +145,8 @@ public final class AdasUiStatusMapperTest {
         // the "keep left" instruction.
         assertEquals(0.35, AdasUiStatusMapper.offsetMeters(lane(0.10, 900.0)), 1.0e-6);
         assertEquals(-0.35, AdasUiStatusMapper.offsetMeters(lane(-0.10, 900.0)), 1.0e-6);
+        assertEquals(0.7, AdasUiStatusMapper.offsetMeters(
+                new LaneGeometry.LaneSnapshot(1L, 0.1, 0.7, 3.5, 900.0, 9)), 1.0e-6);
     }
 
     private static LaneGeometry.LaneSnapshot lane(double centerOffset, double radius) {
