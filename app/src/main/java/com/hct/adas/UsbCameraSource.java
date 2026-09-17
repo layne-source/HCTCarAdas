@@ -357,6 +357,13 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         return invalidFrames.get();
     }
 
+    public synchronized String currentCameraId() {
+        UsbDevice device = selectedDevice;
+        if (device == null) {
+            return "";
+        }
+        return "usb:" + device.getVendorId() + ":" + device.getProductId();
+    }
     /** Allows the foreground UI to retry after the bounded automatic retries are exhausted. */
     public void retryOpen() {
         if (!running || closed || opening) {

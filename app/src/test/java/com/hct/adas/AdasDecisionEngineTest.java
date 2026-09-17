@@ -22,8 +22,12 @@ public final class AdasDecisionEngineTest {
     public void exposesHeadwayWarningWhileTargetStaysTooClose() {
         AdasDecisionEngine engine = new AdasDecisionEngine();
 
+        // At 40 km/h (11.1 m/s), 7m is THW = 0.63s <= 1.2s -> Warning
         assertTrue(engine.update(observation(0L, 40.0, 7.0, 0.0, 1000.0, true)).headwayWarning());
-        assertFalse(engine.update(observation(100L, 40.0, 9.0, 0.0, 1000.0, true)).headwayWarning());
+        // At 40 km/h, 15m is THW = 1.35s > 1.2s -> Clear
+        assertFalse(engine.update(observation(100L, 40.0, 15.0, 0.0, 1000.0, true)).headwayWarning());
+        // At 100 km/h (27.8 m/s), 20m is THW = 0.72s <= 1.2s -> High speed THW Warning
+        assertTrue(engine.update(observation(200L, 100.0, 20.0, 0.0, 1000.0, true)).headwayWarning());
     }
 
     @Test

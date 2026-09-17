@@ -182,8 +182,8 @@ public final class MainActivity extends Activity {
                     }
                 }
                 VehicleDetector.Result result = detector.detect(frame);
+                nextDetectorRetryNanos = 0L;
                 // Keep inference outside the lock; transitions and the short analysis stage
-                // share one lock so an old frame cannot mutate a new session's state.
                 synchronized (MainActivity.this) {
                     if (!started || sessionStart != acceptFramesAfterNanos
                             || frameGeneration != resultsGeneration || simulationSnapshot != null) {
@@ -218,7 +218,7 @@ public final class MainActivity extends Activity {
                 } finally {
                     detector = null;
                     initializationFailure = null;
-                    nextDetectorRetryNanos = 0L;
+                    // Retain nextDetectorRetryNanos to prevent rapid spin-loop worker restarts
                 }
             }
         });
@@ -231,8 +231,15 @@ public final class MainActivity extends Activity {
                     public void onDeviceConnectionChanged(UsbDevice device, boolean connected) {
                         updateCameraStatus(getString(connected ? R.string.camera_opened
                                 : R.string.camera_disconnected), !connected);
+                        if (connected) {
+                            String currentId = cameraSource.currentCameraId();
+                            CameraCalibration matched = calibrationStore.load(currentId);
+                            if (matched == null && calibration != null) {
+                                Log.w(TAG, "[CALIB] Camera hardware changed (" + currentId + "), invalidating old calibration");
+                                applyCameraCalibration(null);
+                            }
+                        }
                     }
-
                     public void onDeviceDetached(UsbDevice device) {
                         updateCameraStatus(getString(R.string.camera_disconnected), true);
                     }
@@ -617,9 +624,9 @@ public final class MainActivity extends Activity {
                 activeCalib = step.status() == CalibrationStore.Status.CALIBRATED
                         ? step.calibration() : null;
                 if (persistCalibration) {
-                    calibrationStore.save(step.calibration(), step.status(), step.progressPercent());
+                    String currentId = cameraSource != null ? cameraSource.currentCameraId() : "";
+                    calibrationStore.save(step.calibration(), step.status(), step.progressPercent(), currentId);
                 }
-                postCalibrationOverlay(frameGeneration);
             } else if (step.status() != calibrationStatus || step.progressPercent() != calibrationProgress) {
                 calibrationStatus = step.status();
                 calibrationProgress = step.progressPercent();
@@ -632,8 +639,9 @@ public final class MainActivity extends Activity {
         LeadVehicleMotionEstimator.Measurement motion = motionEstimator.update(
                 tracking, activeCalib, result.frameWidth(), result.frameHeight());
 
-        long decisionTargetId = tracking.state() == LeadVehicleTracker.State.TRACKING
-                ? tracking.trackId() : 0L;
+        boolean hasTarget = (tracking.state() == LeadVehicleTracker.State.TRACKING
+                || tracking.state() == LeadVehicleTracker.State.LOST);
+        long decisionTargetId = hasTarget ? tracking.trackId() : 0L;
         if (decisionTargetId != previousDecisionTargetId) {
             decisionEngine.resetTargetState();
             previousDecisionTargetId = decisionTargetId;
@@ -934,12 +942,12 @@ public final class MainActivity extends Activity {
         calibrationProgress = 0;
         autoCalibrationLearner.reset(calibrationStatus);
         clearResults();
+        String currentId = cameraSource != null ? cameraSource.currentCameraId() : "";
         if (next == null) {
             calibrationStore.clear();
         } else {
-            calibrationStore.save(next, calibrationStatus, 0);
+            calibrationStore.save(next, calibrationStatus, 0, currentId);
         }
-        overlayView.setCalibration(next, calibrationStatus);
         updateCalibrationStatus(null);
     }
 

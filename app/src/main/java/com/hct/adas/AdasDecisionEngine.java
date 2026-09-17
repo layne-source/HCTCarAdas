@@ -46,7 +46,7 @@ public final class AdasDecisionEngine {
     private static final double FCW_MIN_SPEED_KMH = 20.0;
     private static final double FCW_TTC_SECONDS = 2.4;
     private static final int FCW_REQUIRED_FRAMES = 3;
-    private static final long FCW_CONFIRM_MILLIS = 400L;
+    private static final long FCW_CONFIRM_MILLIS = 200L;
     private static final long FCW_COOLDOWN_MILLIS = 3_000L;
     private static final double HMW_DISTANCE_METERS = 8.0;
     private static final double HMW_LOW_SPEED_THRESHOLD_KMH = 15.0;
@@ -63,6 +63,7 @@ public final class AdasDecisionEngine {
     private static final int LVSA_REQUIRED_MOVEMENT_FRAMES = 2;
     private static final long LVSA_COOLDOWN_MILLIS = 10_000L;
     // Engineering noise tolerances for establishing a stationary lead; validate on the fitted camera.
+    private static final long LVSA_MAX_LOST_MILLIS = 600L;
     private static final double LVSA_MAX_STATIONARY_CLOSING_SPEED_MPS = 0.75;
     private static final double LVSA_DISTANCE_STABILITY_TOLERANCE_METERS = 0.35;
     private static final double LVSA_AREA_STABILITY_TOLERANCE_RATIO = 0.08;
@@ -82,6 +83,7 @@ public final class AdasDecisionEngine {
     private double stationaryArea;
     private int stationaryMovementFrames;
     private boolean stationaryArmed;
+    private Long targetLostSinceMillis;
     private Long laneDepartureSince;
     private long ldwCooldownUntil;
 
@@ -104,7 +106,9 @@ public final class AdasDecisionEngine {
             dangerousFrames = 0;
             dangerSinceMillis = null;
         }
-        boolean fcwConfirmed = collisionDanger && dangerousFrames >= FCW_REQUIRED_FRAMES;
+        boolean fcwConfirmed = collisionDanger && dangerousFrames >= FCW_REQUIRED_FRAMES
+                && dangerSinceMillis != null
+                && (observation.timestampMillis() - dangerSinceMillis >= FCW_CONFIRM_MILLIS);
         if (fcwConfirmed && observation.timestampMillis() >= fcwCooldownUntil) {
             events.add(Alert.FCW);
             fcwCooldownUntil = observation.timestampMillis() + FCW_COOLDOWN_MILLIS;
@@ -143,14 +147,19 @@ public final class AdasDecisionEngine {
         }
         double speedKmh = observation.egoSpeedKmh();
         double distance = observation.distanceMeters();
-        if (Double.isFinite(speedKmh) && speedKmh >= 45.0) {
-            double speedMps = speedKmh / 3.6;
-            double thwSeconds = distance / speedMps;
-            return thwSeconds <= HMW_THW_CAUTION_SECONDS || distance <= HMW_DISTANCE_METERS;
+        if (Double.isFinite(speedKmh)) {
+            if (speedKmh <= LVSA_MAX_STATIONARY_SPEED_KMH) {
+                // Stationary in traffic: only warn if right on the bumper (<= 4.0m)
+                return distance <= HMW_CRITICAL_DISTANCE_METERS;
+            }
+            if (speedKmh >= HMW_LOW_SPEED_THRESHOLD_KMH) {
+                double speedMps = speedKmh / 3.6;
+                double thwSeconds = distance / speedMps;
+                return thwSeconds <= HMW_THW_CAUTION_SECONDS || distance <= HMW_DISTANCE_METERS;
+            }
         }
         return distance <= HMW_DISTANCE_METERS;
     }
-
     private boolean isHeadwayCritical(Observation observation) {
         if (!observation.targetVisible() || !Double.isFinite(observation.distanceMeters())
                 || observation.distanceMeters() <= 0.0) {
@@ -175,17 +184,34 @@ public final class AdasDecisionEngine {
     }
 
     private void updateStationaryState(Observation observation, EnumSet<Alert> events) {
-        boolean validObservation = observation.targetVisible() && Double.isFinite(observation.egoSpeedKmh())
-                && Double.isFinite(observation.distanceMeters()) && Double.isFinite(observation.targetAreaPixels())
-                && Double.isFinite(observation.closingSpeedMps())
-                && observation.distanceMeters() > 0.0 && observation.targetAreaPixels() > 0.0
-                && observation.egoSpeedKmh() >= 0.0
-                && observation.egoSpeedKmh() <= LVSA_MAX_STATIONARY_SPEED_KMH;
-        if (!validObservation) {
+        // 1. Ego vehicle motion check: immediate reset if ego moves or speed invalid
+        if (!Double.isFinite(observation.egoSpeedKmh())
+                || observation.egoSpeedKmh() < 0.0
+                || observation.egoSpeedKmh() > LVSA_MAX_STATIONARY_SPEED_KMH) {
             clearStationaryState();
             return;
         }
 
+        // 2. Target visibility tolerance: allow up to 600ms transient occlusion before disarming
+        if (!observation.targetVisible()) {
+            if (targetLostSinceMillis == null) {
+                targetLostSinceMillis = observation.timestampMillis();
+            }
+            if (observation.timestampMillis() - targetLostSinceMillis > LVSA_MAX_LOST_MILLIS) {
+                clearStationaryState();
+            }
+            return;
+        }
+        targetLostSinceMillis = null;
+
+        boolean validData = Double.isFinite(observation.distanceMeters())
+                && Double.isFinite(observation.targetAreaPixels())
+                && Double.isFinite(observation.closingSpeedMps())
+                && observation.distanceMeters() > 0.0 && observation.targetAreaPixels() > 0.0;
+        if (!validData) {
+            clearStationaryState();
+            return;
+        }
         if (stationaryArmed) {
             if (stationaryDistance - observation.distanceMeters() > LVSA_DISTANCE_STABILITY_TOLERANCE_METERS
                     || (observation.targetAreaPixels() - stationaryArea) / stationaryArea
@@ -256,6 +282,7 @@ public final class AdasDecisionEngine {
         stationaryArea = Double.NaN;
         stationaryMovementFrames = 0;
         stationaryArmed = false;
+        targetLostSinceMillis = null;
     }
 
     private boolean updateLaneState(Observation observation, LaneObservation lane,
