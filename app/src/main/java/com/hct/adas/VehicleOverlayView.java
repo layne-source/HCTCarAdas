@@ -12,11 +12,6 @@ import android.graphics.Shader;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.WindowInsets;
-import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.Shader;
-import android.util.AttributeSet;
-import android.view.View;
 
 import java.util.Locale;
 
@@ -124,8 +119,10 @@ public final class VehicleOverlayView extends View {
         float left = (getWidth() - width) / 2f;
         float top = (getHeight() - height) / 2f;
 
-        // Calibration baseline guidelines are always drawn during uncalibrated, wizard, or learning states
-        if (calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null) {
+        // Calibration baseline guidelines are always drawn during uncalibrated, wizard, learning, or size mismatch states
+        boolean sizeMismatch = result != null && calibration != null
+                && !calibration.isUsableFor(result.frameWidth(), result.frameHeight());
+        if (calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null || sizeMismatch) {
             Paint calibrationPaint = regionPaint;
             calibrationPaint.setColor(0xFFFFB74D);
             calibrationPaint.setPathEffect(null);
@@ -146,7 +143,11 @@ public final class VehicleOverlayView extends View {
             return; // Only skip dynamic vehicle boxes and lanes when no detection result is available
         }
 
-        drawLane(canvas, left, top, width, height);
+        // Lane geometry is extrapolated from a fixed normalized ROI, so it is only meaningful while
+        // the active calibration is bound to this exact frame size.
+        if (!sizeMismatch) {
+            drawLane(canvas, left, top, width, height);
+        }
         for (VehicleDetector.Detection detection : result.vehicles()) {
             boolean selected = tracking != null && detection.equals(tracking.detection());
             int color = selected ? selectedColor() : 0xFFB0BEC5;

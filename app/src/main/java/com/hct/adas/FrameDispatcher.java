@@ -8,13 +8,16 @@ import java.util.Objects;
  * The newest frames are preferred because stale frames are not useful for warnings.
  */
 public final class FrameDispatcher implements AutoCloseable {
-    public record Metrics(long offeredFrames, long droppedFrames) {
+    public record Metrics(long offeredFrames, long droppedFrames, long discardedFrames) {
+        public Metrics(long offeredFrames, long droppedFrames) {
+            this(offeredFrames, droppedFrames, 0L);
+        }
     }
-
     private final ArrayDeque<Frame> frames;
     private final int capacity;
     private long offeredFrames;
     private long droppedFrames;
+    private long discardedFrames;
     private boolean closed;
 
     public FrameDispatcher(int capacity) {
@@ -77,11 +80,13 @@ public final class FrameDispatcher implements AutoCloseable {
     }
 
     public synchronized Metrics metrics() {
-        return new Metrics(offeredFrames, droppedFrames);
+        return new Metrics(offeredFrames, droppedFrames, discardedFrames);
     }
 
     public synchronized void discardPending() {
-        droppedFrames += frames.size();
+        // Deliberate invalidation (disconnect, reopen, session reset) is not queue overflow.
+        // Keeping the counters apart lets the UI show congestion and stream loss separately.
+        discardedFrames += frames.size();
         frames.clear();
     }
 

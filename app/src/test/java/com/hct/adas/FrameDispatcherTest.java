@@ -53,8 +53,24 @@ public final class FrameDispatcherTest {
         dispatcher.offer(new byte[] {1}, 2, 2, 1L);
         dispatcher.discardPending();
         assertNull(dispatcher.poll());
-        assertEquals(1L, dispatcher.metrics().droppedFrames());
+        // Deliberate invalidation is reported separately from queue overflow.
+        assertEquals(0L, dispatcher.metrics().droppedFrames());
+        assertEquals(1L, dispatcher.metrics().discardedFrames());
         assertTrue(dispatcher.offer(new byte[] {2}, 2, 2, 2L));
         assertEquals(2L, dispatcher.poll().timestampNanos());
+    }
+
+    @Test
+    public void reportsQueueOverflowAndDeliberateInvalidationSeparately() {
+        FrameDispatcher dispatcher = new FrameDispatcher(2);
+        dispatcher.offer(new byte[] {1}, 2, 2, 1L);
+        dispatcher.offer(new byte[] {2}, 2, 2, 2L);
+        dispatcher.offer(new byte[] {3}, 2, 2, 3L); // Overflow evicts the oldest frame.
+        dispatcher.discardPending();                 // Session reset drops the rest.
+
+        FrameDispatcher.Metrics metrics = dispatcher.metrics();
+        assertEquals(3L, metrics.offeredFrames());
+        assertEquals(1L, metrics.droppedFrames());
+        assertEquals(2L, metrics.discardedFrames());
     }
 }

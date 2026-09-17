@@ -321,6 +321,7 @@ public final class MainActivity extends Activity {
 
     private void renderMetrics() {
         long now = System.nanoTime();
+        long captured = cameraSource.capturedFrames();
         if (now - lastHeartbeatLogNanos >= 1_000_000_000L) {
             lastHeartbeatLogNanos = now;
             Analysis heartbeat = latestAnalysis;
@@ -340,15 +341,15 @@ public final class MainActivity extends Activity {
             String speedDesc = validSpeedKmh() ? String.format(Locale.ROOT, "%.1f km/h", egoSpeedKmh) : "NO_GPS";
             String eventDesc = (heartbeat != null && !heartbeat.decision().events().isEmpty())
                     ? heartbeat.decision().events().toString() : "NONE";
-            long capturedFramesCount = cameraSource.capturedFrames();
-            double currentFps = (capturedFramesCount - previousCaptured) * 1_000_000_000.0
+            double resultAgeMs = (heartbeat != null && heartbeat.detections() != null)
+                    ? Math.max(0.0, (now - heartbeat.detections().timestampNanos()) / 1_000_000.0) : 0.0;
+            double currentFps = (captured - previousCaptured) * 1_000_000_000.0
                     / Math.max(1L, now - previousMetricsTime);
 
             Log.i(TAG, String.format(Locale.ROOT,
-                    "[HEARTBEAT] FPS=%.1f | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
-                    currentFps, speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
+                    "[HEARTBEAT] FPS=%.1f | Age=%.0fms | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
+                    currentFps, resultAgeMs, speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
         }
-        long captured = cameraSource.capturedFrames();
         double fps = (captured - previousCaptured) * 1_000_000_000.0
                 / Math.max(1L, now - previousMetricsTime);
         previousCaptured = captured;
@@ -356,7 +357,7 @@ public final class MainActivity extends Activity {
         FrameDispatcher.Metrics queue = frameDispatcher.metrics();
         FrameConsumer.Metrics worker = frameConsumer.metrics();
         String stream = getString(R.string.stream_metrics, fps, queue.offeredFrames(),
-                worker.processedFrames(), queue.droppedFrames(),
+                worker.processedFrames(), queue.droppedFrames(), queue.discardedFrames(),
                 worker.failedFrames() + cameraSource.invalidFrames());
         AlertAudio.Status audioStatus = alertAudio == null ? AlertAudio.Status.UNAVAILABLE : alertAudio.status();
         stream += switch (audioStatus) {
@@ -655,7 +656,7 @@ public final class MainActivity extends Activity {
                 decisionDistance, motion.closingSpeedMps(),
                 motion.targetAreaPixels(), motion.visible());
         AdasDecisionEngine.LaneObservation laneObservation =
-                (calibrationStatus == CalibrationStore.Status.UNCONFIGURED)
+                (!simulationFrame && calibrationStatus != CalibrationStore.Status.CALIBRATED)
                         ? new AdasDecisionEngine.LaneObservation(0.0, 0.0, false)
                         : new AdasDecisionEngine.LaneObservation(lane.centerOffset(), lane.confidence(), lane.available());
         AdasDecisionEngine.Decision decision = decisionEngine.update(observation, laneObservation);

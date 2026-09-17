@@ -5,8 +5,20 @@ package com.hct.adas;
  * ROIs are elevated above the vehicle hood line to ensure clear road pavement visibility.
  */
 public final class LaneDepartureDetector {
+    /** Row the top measurement band is reported at; equals the band's geometric center. */
     public static final double Y_TOP = 0.60;
+    /** Row the bottom measurement band is reported at; equals the band's geometric center. */
     public static final double Y_BOTTOM = 0.78;
+    // Bands actually scanned. Y_TOP/Y_BOTTOM are the geometric centers of these two ranges, so the
+    // two-point perspective model and the pixels feeding it use the same reference rows.
+    private static final double TOP_BAND_MIN_Y = 0.54;
+    private static final double TOP_BAND_MAX_Y = 0.66;
+    private static final double BOTTOM_BAND_MIN_Y = 0.72;
+    private static final double BOTTOM_BAND_MAX_Y = 0.84;
+    /** Far edge of the scanned region; used to check the ROI still looks at road, not at the hood. */
+    public static final double ROI_TOP_ROW = TOP_BAND_MIN_Y;
+    /** Near edge of the scanned region. */
+    public static final double ROI_BOTTOM_ROW = BOTTOM_BAND_MAX_Y;
 
     public record Observation(double centerOffset, double confidence, boolean available,
                               double leftTopX, double rightTopX,
@@ -28,11 +40,16 @@ public final class LaneDepartureDetector {
             return unavailable();
         }
 
-        // Elevated bands: Top band [0.54, 0.66], Bottom band [0.72, 0.84] - strictly above hood.
-        LineResult lt = findBrightLine(nv21, width, height, 0.04, 0.50, 0.54, 0.66);
-        LineResult rt = findBrightLine(nv21, width, height, 0.50, 0.96, 0.54, 0.66);
-        LineResult lb = findBrightLine(nv21, width, height, 0.04, 0.48, 0.72, 0.84);
-        LineResult rb = findBrightLine(nv21, width, height, 0.52, 0.98, 0.72, 0.84);
+        // Elevated bands, strictly above the hood: top [0.54, 0.66] reported at Y_TOP, bottom
+        // [0.72, 0.84] reported at Y_BOTTOM.
+        LineResult lt = findBrightLine(nv21, width, height, 0.04, 0.50,
+                TOP_BAND_MIN_Y, TOP_BAND_MAX_Y);
+        LineResult rt = findBrightLine(nv21, width, height, 0.50, 0.96,
+                TOP_BAND_MIN_Y, TOP_BAND_MAX_Y);
+        LineResult lb = findBrightLine(nv21, width, height, 0.04, 0.48,
+                BOTTOM_BAND_MIN_Y, BOTTOM_BAND_MAX_Y);
+        LineResult rb = findBrightLine(nv21, width, height, 0.52, 0.98,
+                BOTTOM_BAND_MIN_Y, BOTTOM_BAND_MAX_Y);
 
         if (!finite(lt.x()) || !finite(rt.x()) || !finite(lb.x()) || !finite(rb.x())) {
             return unavailable();

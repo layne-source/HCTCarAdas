@@ -2,6 +2,7 @@ package com.hct.adas;
 
 import android.util.Log;
 import java.util.ArrayDeque;
+import java.util.Locale;
 /**
  * Online camera calibration learner using lane perspective vanishing points.
  * Automatically converges pitch angle during driving and adapts to vehicle load changes.
@@ -22,7 +23,12 @@ public final class AutoCalibrationLearner {
     public static final double MAX_SPEED_KMH = 120.0;
     public static final double MIN_LANE_CONFIDENCE = 0.35;
     public static final double MIN_LANE_WIDTH_DELTA = 0.04;
-    public static final double MIN_VANISHING_Y = 0.35;
+    /**
+     * Upper end of the observable vanishing point window, ~12.9 deg of downward pitch at the
+     * default wizard intrinsics. Kept inside the ROI visibility guard below so the geometric guard
+     * never rejects a sample this window still admits.
+     */
+    public static final double MIN_VANISHING_Y = 0.30;
     public static final double MAX_VANISHING_Y = 0.60;
     public static final double MIN_VANISHING_X = 0.36;
     public static final double MAX_VANISHING_X = 0.64;
@@ -31,6 +37,15 @@ public final class AutoCalibrationLearner {
     public static final double ONLINE_TRACKING_RATE = 0.002;
     private static final double MIN_PITCH_DEGREES = -5.0;
     private static final double MAX_PITCH_DEGREES = 20.0;
+    /**
+     * A vanishing point is only trusted while the lane ROI's far edge still reaches this far ahead.
+     * The ROI rows are fixed, so a steeply pitched camera compresses the whole ROI towards the
+     * bumper and this bound is what rejects the resulting vanishing points. At the default wizard
+     * intrinsics it starts biting around 13.3 deg, just outside MIN_VANISHING_Y.
+     */
+    static final double MIN_ROI_FAR_DISTANCE_METERS = 4.0;
+    /** Rejects a theoretical pitch that would push the ROI's near edge past the usable range. */
+    static final double MAX_ROI_NEAR_DISTANCE_METERS = 40.0;
     private static final String TAG = "HctAdasCore";
     private static final double PITCH_UPDATE_THRESHOLD_DEGREES = 0.05;
     public static final double LANE_Y_TOP = LaneDepartureDetector.Y_TOP;
@@ -82,6 +97,17 @@ public final class AutoCalibrationLearner {
             return new StepResult(currentCalibration, status, progress, Double.NaN, false);
         }
 
+        // Gating 4: the fixed lane ROI must still look at road, not at the hood. A steeply pitched
+        // camera can produce a plausible looking perspective fit while the ROI covers only 1-2 m,
+        // so the learned pitch is never accepted without this physical check.
+        if (!isLaneRoiVisible(currentCalibration)) {
+            resetSamples();
+            Log.w(TAG, String.format(Locale.ROOT,
+                    "[CALIB] Rejected sample: lane ROI collapsed to the hood at pitch=%.1f deg",
+                    currentCalibration.pitchDegrees()));
+            return new StepResult(currentCalibration, status, progress, Double.NaN, false);
+        }
+
         VanishingPoint vp = solveVanishingPoint(lane);
         if (!vp.valid()) {
             resetSamples();
@@ -112,16 +138,25 @@ public final class AutoCalibrationLearner {
 
                 if (stdDev <= MAX_CONVERGENCE_STD_DEV) {
                     double learnedPitch = computePitchFromVanishingY(meanY, currentCalibration);
-                    if (Double.isFinite(learnedPitch)
+                    // The candidate pitch itself must keep the ROI on the road, otherwise a steeply
+                    // pitched camera would persist a pitch whose own measurements are unusable.
+                    CameraCalibration candidate = Double.isFinite(learnedPitch)
+                            ? currentCalibration.withPitchDegrees(learnedPitch) : null;
+                    if (candidate != null
                             && learnedPitch >= MIN_PITCH_DEGREES
-                            && learnedPitch <= MAX_PITCH_DEGREES) {
-                        CameraCalibration converged = currentCalibration.withPitchDegrees(learnedPitch);
+                            && learnedPitch <= MAX_PITCH_DEGREES
+                            && isLaneRoiVisible(candidate)) {
                         status = CalibrationStore.Status.CALIBRATED;
                         progress = 100;
                         trackedPitch = learnedPitch;
-                        Log.i(TAG, String.format("[CALIB] Auto-calibration CONVERGED! Learned pitch=%.2f deg (stdDev=%.4f)", learnedPitch, stdDev));
-                        return new StepResult(converged, status, 100, vp.y(), true);
+                        Log.i(TAG, String.format(Locale.ROOT,
+                                "[CALIB] Auto-calibration CONVERGED! Learned pitch=%.2f deg (stdDev=%.4f)",
+                                learnedPitch, stdDev));
+                        return new StepResult(candidate, status, 100, vp.y(), true);
                     }
+                    Log.w(TAG, String.format(Locale.ROOT,
+                            "[CALIB] Convergence rejected: pitch=%.2f deg would push the lane ROI off the road",
+                            learnedPitch));
                 }
             }
             return new StepResult(currentCalibration, status, progress, vp.y(), false);
@@ -131,14 +166,18 @@ public final class AutoCalibrationLearner {
             double observedPitch = computePitchFromVanishingY(vp.y(), currentCalibration);
             if (Double.isFinite(observedPitch)
                     && observedPitch >= MIN_PITCH_DEGREES
-                    && observedPitch <= MAX_PITCH_DEGREES) {
+                    && observedPitch <= MAX_PITCH_DEGREES
+                    && isLaneRoiVisible(currentCalibration.withPitchDegrees(observedPitch))) {
                 if (!Double.isFinite(trackedPitch)) {
                     trackedPitch = currentCalibration.pitchDegrees();
                 }
                 trackedPitch = trackedPitch * (1.0 - ONLINE_TRACKING_RATE)
                         + observedPitch * ONLINE_TRACKING_RATE;
-                if (Math.abs(trackedPitch - currentCalibration.pitchDegrees()) >= PITCH_UPDATE_THRESHOLD_DEGREES) {
-                    Log.i(TAG, String.format("[CALIB] Online tracking adjusted pitch: %.2f -> %.2f deg", currentCalibration.pitchDegrees(), trackedPitch));
+                if (Math.abs(trackedPitch - currentCalibration.pitchDegrees()) >= PITCH_UPDATE_THRESHOLD_DEGREES
+                        && isLaneRoiVisible(currentCalibration.withPitchDegrees(trackedPitch))) {
+                    Log.i(TAG, String.format(Locale.ROOT,
+                            "[CALIB] Online tracking adjusted pitch: %.2f -> %.2f deg",
+                            currentCalibration.pitchDegrees(), trackedPitch));
                     CameraCalibration updated = currentCalibration.withPitchDegrees(trackedPitch);
                     return new StepResult(updated, status, 100, vp.y(), true);
                 }
@@ -202,6 +241,40 @@ public final class AutoCalibrationLearner {
         // rayAngle = -pitch => (y_vp - cy) / fy = tan(-pitch) = -tan(pitch)
         // tan(pitch) = (cy - y_vp) / fy => pitch = atan((cy - y_vp) / fy)
         return Math.toDegrees(Math.atan((cy - vanishingY) / fy));
+    }
+
+    /**
+     * Largest downward pitch the vanishing point window can represent. Keeping the window and the
+     * pitch acceptance bounds derived from the same expression prevents one of them from silently
+     * rejecting samples the other still admits.
+     */
+    public static double vanishingPitchLimitDegrees(CameraCalibration calibration) {
+        return calibration == null
+                ? Double.NaN : computePitchFromVanishingY(MIN_VANISHING_Y, calibration);
+    }
+
+    /**
+     * Ground distance of a normalized image row under the flat-road model, or NaN when the ray
+     * leaves the valid ground region.
+     */
+    static double groundDistanceMeters(CameraCalibration calibration, double rowYNormalized) {
+        if (calibration == null || !Double.isFinite(rowYNormalized)) {
+            return Double.NaN;
+        }
+        return calibration.estimateDistanceMeters(rowYNormalized);
+    }
+
+    /**
+     * True while the lane detector's fixed ROI still falls inside a usable distance band. The ROI
+     * rows are constants, so a steeply pitched camera compresses the whole ROI towards the bumper;
+     * this check is what stops the learner from trusting vanishing points measured there.
+     */
+    static boolean isLaneRoiVisible(CameraCalibration calibration) {
+        double nearDistance = groundDistanceMeters(calibration, LaneDepartureDetector.ROI_BOTTOM_ROW);
+        double farDistance = groundDistanceMeters(calibration, LaneDepartureDetector.ROI_TOP_ROW);
+        return Double.isFinite(nearDistance) && Double.isFinite(farDistance)
+                && farDistance >= MIN_ROI_FAR_DISTANCE_METERS
+                && nearDistance <= MAX_ROI_NEAR_DISTANCE_METERS;
     }
 
     private static double computeMean(ArrayDeque<Double> data) {

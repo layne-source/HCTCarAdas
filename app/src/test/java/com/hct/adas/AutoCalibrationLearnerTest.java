@@ -200,4 +200,82 @@ public final class AutoCalibrationLearnerTest {
         assertNotEquals(2.0, current.pitchDegrees(), 0.001);
         assertTrue(current.pitchDegrees() > 2.0);
     }
+
+    @Test
+    public void laneRoiGuardRejectsSteepPitchWhereTheFixedRoiLooksAtTheHood() {
+        // At 1.25 m the ROI keeps at least 4 m of road in view up to ~14 deg of downward pitch.
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(4.0)));
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(9.6)));
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(14.0)));
+        assertFalse(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(16.0)));
+        assertFalse(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(20.0)));
+        // A taller mounting keeps the same ROI rows on usable road, so the guard is not a flat
+        // pitch limit: it rejects the angle only where the ROI actually collapses.
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(
+                CameraCalibration.fromWizard(1280, 720, 1.75, 90.0, 16.0)));
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(
+                CameraCalibration.fromWizard(1280, 720, 2.0, 90.0, 20.0)));
+        assertFalse(AutoCalibrationLearner.isLaneRoiVisible(null));
+    }
+
+    @Test
+    public void vanishingWindowStaysInsideTheLaneRoiGuard() {
+        // The observable window must not admit samples the physical guard already rejects,
+        // otherwise the two limits disagree and samples are silently dropped.
+        CameraCalibration atWindowLimit = wizardAt(
+                AutoCalibrationLearner.vanishingPitchLimitDegrees(wizardAt(4.0)));
+        assertEquals(12.68, atWindowLimit.pitchDegrees(), 0.05);
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(atWindowLimit));
+    }
+
+    @Test
+    public void rejectsSamplesWhenTheConfiguredPitchPutsTheRoiOnTheHood() {
+        CameraCalibration steep = wizardAt(20.0);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
+                0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+
+        for (int i = 0; i < 80; i++) {
+            AutoCalibrationLearner.StepResult step = learner.update(lane, 60.0, steep);
+            assertFalse("A collapsed ROI must never produce a calibration update",
+                    step.calibrationUpdated());
+        }
+        // Samples are discarded rather than accumulated, so the learner must stay pending.
+        assertEquals(CalibrationStore.Status.WIZARD_COMPLETED, learner.status());
+        assertEquals(0, learner.progress());
+    }
+
+    @Test
+    public void reachesCalibratedForATallVehicleWithinTheGuard() {
+        CameraCalibration tall = CameraCalibration.fromWizard(1280, 720, 1.75, 90.0, 4.0);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        // A constant vanishing point at the far end of the observable window (y_vp = 0.30,
+        // ~12.7 deg of pitch). Tall mounting keeps the fixed ROI on usable road at that angle,
+        // so this is the steepest calibration the learner is allowed to persist.
+        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
+                0.0, 0.90, true, 0.38, 0.62, 0.20, 0.80);
+        assertEquals(0.30, AutoCalibrationLearner.solveVanishingPoint(lane).y(), 0.005);
+
+        CameraCalibration current = tall;
+        AutoCalibrationLearner.StepResult step = null;
+        for (int i = 0; i < AutoCalibrationLearner.REQUIRED_CONVERGENCE_SAMPLES; i++) {
+            step = learner.update(lane, 60.0, current);
+            if (step.calibrationUpdated()) {
+                current = step.calibration();
+            }
+        }
+
+        assertNotNull(step);
+        assertEquals(CalibrationStore.Status.CALIBRATED, step.status());
+        assertTrue(step.calibrationUpdated());
+        assertEquals(12.68, current.pitchDegrees(), 0.05);
+        assertTrue("Learned pitch must keep the ROI on the road",
+                AutoCalibrationLearner.isLaneRoiVisible(current));
+    }
+
+    private static CameraCalibration wizardAt(double pitchDegrees) {
+        return CameraCalibration.fromWizard(1280, 720, 1.25, 90.0, pitchDegrees);
+    }
 }

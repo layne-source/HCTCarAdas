@@ -40,6 +40,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private static final long FRAME_WATCHDOG_INTERVAL_MILLIS = 1_000L;
     private static final long FRAME_WATCHDOG_TIMEOUT_NANOS = 3_000_000_000L;
     private static final long STREAM_STABLE_NANOS = 5_000_000_000L;
+    private static final long OPEN_WATCHDOG_TIMEOUT_NANOS = 8_000_000_000L;
     private final Activity activity;
     private final TextureView previewView;
     private final FrameDispatcher dispatcher;
@@ -61,6 +62,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private volatile boolean previewActive;
     private volatile long previewStartedNanos;
     private volatile long lastFrameNanos;
+    private volatile long openingStartedNanos;
     private boolean streamConfirmed;
     private UsbDevice selectedDevice;
     private SurfaceTexture surface;
@@ -74,8 +76,14 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             if (!running || closed) {
                 return;
             }
-            if (previewActive) {
-                long now = System.nanoTime();
+            long now = System.nanoTime();
+            if (opening && !previewActive && openingStartedNanos > 0L
+                    && now - openingStartedNanos >= OPEN_WATCHDOG_TIMEOUT_NANOS) {
+                int token = invalidatePreview();
+                cameraHandler.post(UsbCameraSource.this::closeCamera);
+                listener.onError("USB 摄像头打开超时，正在自动重连");
+                scheduleOpenRetry(token);
+            } else if (previewActive) {
                 long reference = lastFrameNanos > 0L ? lastFrameNanos : previewStartedNanos;
                 if (reference > 0L && now - reference >= FRAME_WATCHDOG_TIMEOUT_NANOS) {
                     int token = invalidatePreview();
@@ -207,6 +215,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         }
         int token = invalidatePreview();
         opening = true;
+        openingStartedNanos = System.nanoTime();
         UsbDevice device = selectedDevice;
         SurfaceTexture target = surface;
         cameraHandler.post(() -> openCamera(token, device, target));
@@ -317,6 +326,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private int invalidatePreview() {
         int token = generation.incrementAndGet();
         opening = false;
+        openingStartedNanos = 0L;
         previewActive = false;
         streamConfirmed = false;
         previewStartedNanos = 0L;

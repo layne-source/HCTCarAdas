@@ -8,7 +8,7 @@
     <string name="calibration_required">点击设置摄像头标定；绿色区域为车道估计，颜色仅表示当前风险</string>
     <string name="waiting_for_frames">等待有效视频帧</string>
     <string name="stale_detection_result">检测结果已过期，请检查帧流和分析耗时</string>
-    <string name="stream_metrics">采集 %1$.1f fps · 输入 %2$d · 消费 %3$d · 丢帧 %4$d · 异常 %5$d</string>
+    <string name="stream_metrics">采集 %1$.1f fps · 输入 %2$d · 消费 %3$d · 丢帧 %4$d · 作废 %5$d · 异常 %6$d</string>
     <string name="detection_metrics">车辆 %1$d · 单帧分析 %2$.0f ms</string>
     <string name="tracking_none">搜索区内暂无前方候选</string>
     <string name="tracking_candidate">候选确认中</string>
