@@ -42,7 +42,10 @@ public final class FrameDispatcher implements AutoCloseable {
             frames.removeFirst();
             droppedFrames++;
         }
-        frames.addLast(new Frame(nv21, width, height, timestampNanos));
+        // Wall clock at hand-off travels with the frame so the consumer can split the end-to-end
+        // age into a queueing part and a processing part. It is per-frame rather than a shared
+        // field: the producer may hand over the next frame while this one is still being handled.
+        frames.addLast(new Frame(nv21, width, height, timestampNanos, System.nanoTime()));
         notifyAll();
         return true;
     }
@@ -105,7 +108,12 @@ public final class FrameDispatcher implements AutoCloseable {
         notifyAll();
     }
 
-    public record Frame(byte[] nv21, int width, int height, long timestampNanos) {
+    /**
+     * @param timestampNanos capture timestamp, used for analysis ordering and staleness checks
+     * @param offeredAtNanos {@link System#nanoTime()} when the producer handed the frame over
+     */
+    public record Frame(byte[] nv21, int width, int height, long timestampNanos,
+                        long offeredAtNanos) {
         public Frame {
             Objects.requireNonNull(nv21, "nv21");
             if (width <= 0 || height <= 0) {

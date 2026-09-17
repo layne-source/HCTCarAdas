@@ -12,7 +12,14 @@ public final class FrameConsumer implements AutoCloseable {
         }
     }
 
+    /**
+     * @param lastTimestampNanos capture timestamp of the newest processed frame
+     * @param pickedUpNanos      {@link System#nanoTime()} when the worker dequeued that frame
+     * @param finishedNanos      {@link System#nanoTime()} when the worker finished handling it
+     * @param offeredNanos       {@link System#nanoTime()} when the producer handed that frame over
+     */
     public record Metrics(long processedFrames, long lastTimestampNanos,
+                          long offeredNanos, long pickedUpNanos, long finishedNanos,
                           long failedFrames, String lastError) {
     }
 
@@ -20,6 +27,9 @@ public final class FrameConsumer implements AutoCloseable {
     private final Handler handler;
     private long processedFrames;
     private long lastTimestampNanos;
+    private long offeredNanos;
+    private long pickedUpNanos;
+    private long finishedNanos;
     private long failedFrames;
     private String lastError = "";
     private boolean desiredRunning;
@@ -61,10 +71,19 @@ public final class FrameConsumer implements AutoCloseable {
                     if (frame == null) {
                         continue;
                     }
+                    // The hand-off time travels with the frame: it splits that frame's total age into
+                    // "waiting to be picked up" and "being processed", so a latency regression can be
+                    // attributed to the queue or to the pipeline instead of only to their sum.
+                    long offered = frame.offeredAtNanos();
+                    long pickedUp = System.nanoTime();
                     handler.onFrame(frame);
+                    long finished = System.nanoTime();
                     consecutiveFailures = 0;
                     synchronized (this) {
                         lastTimestampNanos = frame.timestampNanos();
+                        offeredNanos = offered;
+                        pickedUpNanos = pickedUp;
+                        finishedNanos = finished;
                         processedFrames++;
                         lastError = "";
                     }
@@ -102,7 +121,8 @@ public final class FrameConsumer implements AutoCloseable {
     }
 
     public synchronized Metrics metrics() {
-        return new Metrics(processedFrames, lastTimestampNanos, failedFrames, lastError);
+        return new Metrics(processedFrames, lastTimestampNanos, offeredNanos, pickedUpNanos,
+                finishedNanos, failedFrames, lastError);
     }
 
     @Override

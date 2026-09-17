@@ -33,7 +33,31 @@ public final class FrameConsumerTest {
         FrameConsumer.Metrics metrics = consumer.metrics();
         assertEquals(1L, metrics.processedFrames());
         assertEquals(123L, metrics.lastTimestampNanos());
+        // The three hand-off timestamps must be ordered and populated, otherwise the heartbeat
+        // latency split would silently report zeros.
+        assertTrue("hand-off must be recorded", metrics.offeredNanos() > 0L);
+        assertTrue("pick-up must follow the hand-off",
+                metrics.pickedUpNanos() >= metrics.offeredNanos());
+        assertTrue("completion must follow the pick-up",
+                metrics.finishedNanos() >= metrics.pickedUpNanos());
+    }
 
+    @Test
+    public void reportsZeroHandoffTimestampsBeforeAnyFrameIsProcessed() {
+        FrameDispatcher dispatcher = new FrameDispatcher(1);
+        FrameConsumer consumer = new FrameConsumer(dispatcher, new FrameConsumer.Handler() {
+            public void onFrame(FrameDispatcher.Frame frame) { }
+        });
+        try {
+            FrameConsumer.Metrics metrics = consumer.metrics();
+            assertEquals(0L, metrics.processedFrames());
+            assertEquals(0L, metrics.offeredNanos());
+            assertEquals(0L, metrics.pickedUpNanos());
+            assertEquals(0L, metrics.finishedNanos());
+        } finally {
+            consumer.close();
+            dispatcher.close();
+        }
     }
 
     @Test

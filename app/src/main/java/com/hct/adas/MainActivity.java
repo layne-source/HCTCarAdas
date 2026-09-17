@@ -341,6 +341,7 @@ public final class MainActivity extends Activity {
     private void renderMetrics() {
         long now = System.nanoTime();
         long captured = cameraSource.capturedFrames();
+        FrameConsumer.Metrics workerSnapshot = frameConsumer.metrics();
         if (now - lastHeartbeatLogNanos >= 1_000_000_000L) {
             lastHeartbeatLogNanos = now;
             Analysis heartbeat = latestAnalysis;
@@ -360,21 +361,24 @@ public final class MainActivity extends Activity {
             String speedDesc = validSpeedKmh() ? String.format(Locale.ROOT, "%.1f km/h", egoSpeedKmh) : "NO_GPS";
             String eventDesc = (heartbeat != null && !heartbeat.decision().events().isEmpty())
                     ? heartbeat.decision().events().toString() : "NONE";
-            double resultAgeMs = (heartbeat != null && heartbeat.detections() != null)
-                    ? Math.max(0.0, (now - heartbeat.detections().timestampNanos()) / 1_000_000.0) : 0.0;
+            // Age is mixed with the 250 ms metrics phase, so report it alongside the split at the
+            // hand-off and the dequeue: the parts are phase-free and attribute latency to the
+            // throttle, the queue or the pipeline.
+            long[] splitMs = measurementSplitMs(workerSnapshot, now);
             double currentFps = (captured - previousCaptured) * 1_000_000_000.0
                     / Math.max(1L, now - previousMetricsTime);
 
             Log.i(TAG, String.format(Locale.ROOT,
-                    "[HEARTBEAT] FPS=%.1f | Age=%.0fms | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
-                    currentFps, resultAgeMs, speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
+                    "[HEARTBEAT] FPS=%.1f | Age=%.0fms | Split=%d+%d+%dms | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
+                    currentFps, splitMs[3], splitMs[0], splitMs[1], splitMs[2],
+                    speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
         }
         double fps = (captured - previousCaptured) * 1_000_000_000.0
                 / Math.max(1L, now - previousMetricsTime);
         previousCaptured = captured;
         previousMetricsTime = now;
         FrameDispatcher.Metrics queue = frameDispatcher.metrics();
-        FrameConsumer.Metrics worker = frameConsumer.metrics();
+        FrameConsumer.Metrics worker = workerSnapshot;
         String stream = getString(R.string.stream_metrics, fps, queue.offeredFrames(),
                 worker.processedFrames(), queue.droppedFrames(), queue.discardedFrames(),
                 worker.failedFrames() + cameraSource.invalidFrames());
@@ -413,6 +417,33 @@ public final class MainActivity extends Activity {
                 metricsView.setText(stream + "\n" + getString(R.string.waiting_for_frames));
             }
         }
+    }
+
+    /**
+     * Splits the end-to-end measurement leg of the newest processed frame into
+     * {@code {captureToHandoff, queueWait, processing, total}} milliseconds.
+     *
+     * <p>All four are differences between timestamps taken on the same clock, so unlike the
+     * heartbeat's {@code Age} they do not carry the 250 ms metrics-tick phase. They answer different
+     * questions: {@code captureToHandoff} is the cost of the sampling throttle and the NV21 copy,
+     * {@code queueWait} is backlog, and {@code processing} is the per-frame pipeline cost that a
+     * cheaper detection stage would reduce.
+     *
+     * <p>Returns zeros before the first frame is processed, and never returns a negative part.
+     */
+    private static long[] measurementSplitMs(FrameConsumer.Metrics worker, long nowNanos) {
+        long handedOff = worker.offeredNanos();
+        long pickedUp = worker.pickedUpNanos();
+        long finished = worker.finishedNanos();
+        long capturedAt = worker.lastTimestampNanos();
+        if (handedOff == 0L || pickedUp == 0L || finished == 0L || capturedAt == 0L) {
+            return new long[] {0L, 0L, 0L, 0L};
+        }
+        long captureToHandoff = Math.max(0L, handedOff - capturedAt) / 1_000_000L;
+        long queueWait = Math.max(0L, pickedUp - handedOff) / 1_000_000L;
+        long processing = Math.max(0L, finished - pickedUp) / 1_000_000L;
+        long total = Math.max(0L, nowNanos - capturedAt) / 1_000_000L;
+        return new long[] {captureToHandoff, queueWait, processing, total};
     }
 
     private String trackingStatus(LeadVehicleTracker.Snapshot tracking) {
