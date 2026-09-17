@@ -42,7 +42,7 @@
             android:layout_height="wrap_content"
             android:clickable="true"
             android:focusable="true"
-            android:text="@string/calibration_required"
+            android:text="@string/calibration_unset"
             android:textColor="#FFFFD180"
             android:textSize="14sp" />
     </LinearLayout>

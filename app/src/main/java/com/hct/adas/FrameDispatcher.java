@@ -68,9 +68,17 @@ public final class FrameDispatcher implements AutoCloseable {
             if (remainingNanos <= 0) {
                 return null;
             }
+            // Object.wait(0, n) blocks for n nanoseconds, but wait(0) blocks forever, so the
+            // sub-millisecond remainder must stay explicit. This call is written in the nanos-only
+            // form whenever the millisecond part is zero, because collapsing it to wait(millis)
+            // would silently turn the wait into an unbounded one.
             long waitMillis = remainingNanos / 1_000_000L;
             int waitNanos = (int) (remainingNanos % 1_000_000L);
-            wait(waitMillis, waitNanos);
+            if (waitNanos > 0) {
+                wait(waitMillis, waitNanos);
+            } else {
+                wait(waitMillis);
+            }
         }
         return frames.pollFirst();
     }

@@ -21,7 +21,6 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.text.InputType;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -100,6 +99,9 @@ public final class MainActivity extends Activity {
     private long dangerStartedNanos;
     private long previousCaptured;
     private long previousMetricsTime;
+    /** Last preview letterbox scale actually applied, so an unchanged fit is not re-applied. */
+    private float appliedScaleX = Float.NaN;
+    private float appliedScaleY = Float.NaN;
     private long previousProcessedTimestampNanos;
     private final Handler metricsHandler = new Handler(Looper.getMainLooper());
     private record SimulationSnapshot(CameraCalibration calibration,
@@ -119,14 +121,6 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         View content = findViewById(R.id.adas_content);
-        content.setOnApplyWindowInsetsListener((view, insets) -> {
-            Insets navBars = insets.getInsets(WindowInsets.Type.navigationBars());
-            Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
-            int bottom = Math.max(navBars.bottom, systemBars.bottom);
-            overlayView.setBottomInset(bottom);
-            return insets;
-        });
-        content.requestApplyInsets();
         statusView = findViewById(R.id.status);
         metricsView = findViewById(R.id.metrics);
         calibrationView = findViewById(R.id.calibration);
@@ -136,6 +130,16 @@ public final class MainActivity extends Activity {
         }
         previewView = findViewById(R.id.usb_preview);
         overlayView = findViewById(R.id.vehicle_overlay);
+        // Registered only after overlayView exists: the listener touches it directly, so a
+        // synchronous insets dispatch during onCreate would otherwise dereference null.
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            Insets navBars = insets.getInsets(WindowInsets.Type.navigationBars());
+            Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
+            int bottom = Math.max(navBars.bottom, systemBars.bottom);
+            overlayView.setBottomInset(bottom);
+            return insets;
+        });
+        content.requestApplyInsets();
         calibrationStore = new CalibrationStore(this);
         calibration = calibrationStore.load();
         calibrationStatus = calibrationStore.loadStatus();
@@ -250,12 +254,9 @@ public final class MainActivity extends Activity {
                         updateCameraStatus(getString(connected ? R.string.camera_opened
                                 : R.string.camera_disconnected), !connected);
                         if (connected) {
-                            String currentId = cameraSource.currentCameraId();
-                            CameraCalibration matched = calibrationStore.load(currentId);
-                            if (matched == null && calibration != null) {
-                                Log.w(TAG, "[CALIB] Camera hardware changed (" + currentId + "), invalidating old calibration");
-                                applyCameraCalibration(null);
-                            }
+                            // Rebind the calibration to the camera that actually opened: the same
+                            // 1280x720 geometry from a different sensor would otherwise be inherited.
+                            reloadCalibrationForCamera();
                         }
                     }
                     public void onDeviceDetached(UsbDevice device) {
@@ -1032,6 +1033,39 @@ public final class MainActivity extends Activity {
         updateCalibrationStatus(null);
     }
 
+    /**
+     * Rebinds calibration state once a camera has actually opened. A stored calibration without a
+     * recorded camera id cannot be attributed to the device on the other end of the cable, so it is
+     * treated as unbound and dropped: keeping it would silently apply one camera's pitch to another.
+     * When no camera id is known yet the current state is left untouched, because that says nothing
+     * about whether the calibration belongs to this camera.
+     */
+    private synchronized void reloadCalibrationForCamera() {
+        String currentId = cameraSource == null ? "" : cameraSource.currentCameraId();
+        if (currentId.isEmpty()) {
+            return;
+        }
+        CameraCalibration stored = calibrationStore.load(currentId);
+        if (stored != null) {
+            calibration = stored;
+            calibrationStatus = calibrationStore.loadStatus();
+            calibrationProgress = calibrationStore.loadProgress();
+            autoCalibrationLearner.reset(calibrationStatus);
+            updateCalibrationStatus(null);
+            return;
+        }
+        String storedId = calibrationStore.storedCameraId();
+        if (storedId.isEmpty() && calibration != null) {
+            Log.w(TAG, "[CALIB] Calibration has no camera id; invalidating it for " + currentId);
+        } else if (calibration != null) {
+            Log.w(TAG, "[CALIB] Camera changed to " + currentId + " (stored " + storedId
+                    + "), invalidating old calibration");
+        }
+        if (calibration != null) {
+            applyCameraCalibration(null);
+        }
+    }
+
     private EditText numberField(String hint) {
         EditText field = new EditText(this);
         field.setHint(hint);
@@ -1067,17 +1101,27 @@ public final class MainActivity extends Activity {
         return value;
     }
 
+    /**
+     * Letterboxes the preview to the frame aspect ratio. The scale factors only change when the view
+     * size or the frame size changes, so identical inputs are skipped: this runs from the 250 ms
+     * metrics tick and a redundant setTransform would invalidate the view four times a second.
+     */
     private void fitPreview(VehicleDetector.Result result) {
-        if (previewView.getWidth() == 0 || previewView.getHeight() == 0) {
+        if (result == null || previewView.getWidth() == 0 || previewView.getHeight() == 0) {
             return;
         }
         float scale = Math.min((float) previewView.getWidth() / result.frameWidth(),
                 (float) previewView.getHeight() / result.frameHeight());
+        float scaleX = result.frameWidth() * scale / previewView.getWidth();
+        float scaleY = result.frameHeight() * scale / previewView.getHeight();
+        if (appliedScaleX == scaleX && appliedScaleY == scaleY) {
+            return;
+        }
         Matrix matrix = new Matrix();
-        matrix.setScale(result.frameWidth() * scale / previewView.getWidth(),
-                result.frameHeight() * scale / previewView.getHeight(),
-                previewView.getWidth() / 2f, previewView.getHeight() / 2f);
+        matrix.setScale(scaleX, scaleY, previewView.getWidth() / 2f, previewView.getHeight() / 2f);
         previewView.setTransform(matrix);
+        appliedScaleX = scaleX;
+        appliedScaleY = scaleY;
     }
 
     private synchronized void clearResults() {

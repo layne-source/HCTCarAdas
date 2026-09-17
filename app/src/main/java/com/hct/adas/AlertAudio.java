@@ -98,7 +98,11 @@ public final class AlertAudio implements AutoCloseable {
         }
     }
 
-    /** Reports software readiness; READY is not proof that a physical speaker is audible. */
+    /**
+     * Reports software readiness; READY is not proof that a physical speaker is audible. READY
+     * requires all four samples to have loaded: a working tone fallback alone must not mask a
+     * missing or corrupt asset, otherwise the UI never tells the user the sounds are degraded.
+     */
     public synchronized Status status() {
         if (closed) {
             return Status.UNAVAILABLE;
@@ -109,14 +113,19 @@ public final class AlertAudio implements AutoCloseable {
         if (playbackFailed) {
             return Status.UNAVAILABLE;
         }
-        if (toneGenerator != null || (loadedSounds.contains(fcwSound)
-                && loadedSounds.contains(hmwSound) && loadedSounds.contains(ldwSound)
-                && loadedSounds.contains(lvsaSound))) {
+        if (allSamplesLoaded()) {
             return Status.READY;
         }
         return !pendingSounds.isEmpty()
                 && SystemClock.elapsedRealtime() - loadStartedMillis < LOAD_TIMEOUT_MILLIS
                 ? Status.LOADING : Status.UNAVAILABLE;
+    }
+
+    private boolean allSamplesLoaded() {
+        return loadedSounds.contains(fcwSound)
+                && loadedSounds.contains(hmwSound)
+                && loadedSounds.contains(ldwSound)
+                && loadedSounds.contains(lvsaSound);
     }
 
     private boolean isMuted() {
@@ -132,6 +141,10 @@ public final class AlertAudio implements AutoCloseable {
         }
     }
 
+    /**
+     * Plays the speaker test tone. It claims the lowest priority for a short window so that a real
+     * FCW or HMW_CRITICAL event can still preempt it instead of being suppressed by the test sound.
+     */
     public synchronized boolean testSound() {
         activePriority = 1;
         priorityLockUntilNanos = System.nanoTime() + 250_000_000L;
