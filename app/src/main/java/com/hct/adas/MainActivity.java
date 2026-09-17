@@ -80,6 +80,10 @@ public final class MainActivity extends Activity {
     private volatile Set<AdasDecisionEngine.Alert> heldAlerts = Set.of();
     private volatile long heldAlertTargetId;
     private volatile long alertsHoldUntilNanos;
+    // Latency instrumentation: when the collision risk first became measurable, so the log can show
+    // the real confirmation delay instead of an estimate.
+    private boolean previousCollisionDanger;
+    private long dangerStartedNanos;
     private long previousCaptured;
     private long previousMetricsTime;
     private long previousProcessedTimestampNanos;
@@ -670,6 +674,9 @@ public final class MainActivity extends Activity {
             heldAlerts = Set.of();
             alertsHoldUntilNanos = 0L;
             heldAlertTargetId = decisionTargetId;
+            // Danger edge belongs to the previous target; a new target must re-arm its own start.
+            previousCollisionDanger = false;
+            dangerStartedNanos = 0L;
         }
         double decisionDistance = motion.distanceMeters();
         AdasDecisionEngine.Observation observation = new AdasDecisionEngine.Observation(
@@ -681,15 +688,31 @@ public final class MainActivity extends Activity {
                         ? new AdasDecisionEngine.LaneObservation(0.0, 0.0, false)
                         : new AdasDecisionEngine.LaneObservation(lane.centerOffset(), lane.confidence(), lane.available());
         AdasDecisionEngine.Decision decision = decisionEngine.update(observation, laneObservation);
+        // Latency instrumentation only: age is measured against the capture timestamp, so it covers
+        // sampling throttle plus preprocessing and inference for this decision.
+        long nowNanos = System.nanoTime();
+        long resultAgeMs = Math.max(0L, nowNanos - result.timestampNanos()) / 1_000_000L;
+        if (decision.collisionDanger() && !previousCollisionDanger) {
+            dangerStartedNanos = nowNanos;
+            Log.w(TAG, String.format(Locale.ROOT,
+                    "[DANGER-START] Age=%dms | Dist=%.1fm | ClosingSpeed=%.1fm/s | EgoSpeed=%.1f km/h | TTC=%s",
+                    resultAgeMs, motion.distanceMeters(), motion.closingSpeedMps(), speed,
+                    motion.closingSpeedMps() > 0.0
+                            ? String.format(Locale.ROOT, "%.2fs",
+                            motion.distanceMeters() / motion.closingSpeedMps()) : "--"));
+        }
+        previousCollisionDanger = decision.collisionDanger();
         if (!decision.events().isEmpty()) {
             heldAlerts = decision.events();
             heldAlertTargetId = decisionTargetId;
-            alertsHoldUntilNanos = System.nanoTime() + 1_500_000_000L;
+            alertsHoldUntilNanos = nowNanos + 1_500_000_000L;
+            long confirmationMs = dangerStartedNanos > 0L
+                    ? (nowNanos - dangerStartedNanos) / 1_000_000L : -1L;
             for (AdasDecisionEngine.Alert alert : decision.events()) {
                 Log.w(TAG, String.format(Locale.ROOT,
-                        "[ALERT-TRIGGER] >>> %s <<< | Dist=%.1fm | ClosingSpeed=%.1fm/s | EgoSpeed=%.1f km/h | Target=#%d",
-                        alert.name(), motion.distanceMeters(), motion.closingSpeedMps(),
-                        speed, tracking.trackId()));
+                        "[ALERT-TRIGGER] >>> %s <<< | Age=%dms | Confirm=%dms | Dist=%.1fm | ClosingSpeed=%.1fm/s | EgoSpeed=%.1f km/h | Target=#%d",
+                        alert.name(), resultAgeMs, confirmationMs, motion.distanceMeters(),
+                        motion.closingSpeedMps(), speed, tracking.trackId()));
             }
         }
         if (tracking.state() != previousTrackingState || tracking.trackId() != previousTargetId) {
@@ -1030,6 +1053,8 @@ public final class MainActivity extends Activity {
         previousTrackingState = LeadVehicleTracker.State.NONE;
         previousTargetId = 0L;
         previousProcessedTimestampNanos = 0L;
+        previousCollisionDanger = false;
+        dangerStartedNanos = 0L;
         latestAnalysis = null;
         heldAlerts = Set.of();
         alertsHoldUntilNanos = 0L;
