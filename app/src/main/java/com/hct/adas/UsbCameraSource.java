@@ -157,6 +157,13 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         IntentFilter filter = new IntentFilter(permissionAction);
         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+        // NOT_EXPORTED is the safe choice, but it makes delivery of the USB permission result a
+        // platform behaviour rather than something this code controls. On the current test hardware
+        // the app is whitelisted with USB access already granted, so no permission dialog appears
+        // and this path is not exercised at all. Re-verify the whole receiver - the permission
+        // result plus the attach/detach broadcasts - on any device that is not pre-authorised, or as
+        // soon as the app is distributed normally: a missed permission result would leave the
+        // camera waiting for an authorisation the user has already given.
         activity.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
         registered = true;
         selectCamera();
