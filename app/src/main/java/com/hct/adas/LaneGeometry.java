@@ -1,0 +1,483 @@
+package com.hct.adas;
+
+/**
+ * Flat-road lane geometry shared by the calibration learner, the UI mapper and the overlay.
+ *
+ * <p>All model functions work on normalized image coordinates: {@code x}, {@code y} are both in
+ * [0, 1] and {@code y} grows downwards, matching the detector. Canonical ground coordinates are
+ * {@code Z} forwards and {@code X} to the right of the vehicle, in metres, so a positive
+ * {@code X} means the point is to the right of the camera optical axis. Lateral distance uses the
+ * pinhole small-angle relation {@code X = (x - 0.5) * Z / f}, which cancels the unknown horizontal
+ * principal point and yaw as long as the camera looks along the vehicle axis.
+ *
+ * <p>The vertical focal length {@code f_y} is height-normalized (image height = 1) while the
+ * horizontal one is width-normalized (image width = 1), so {@code f_x = f_y * height / width}.
+ * Every relation here assumes a matched frame size; callers must gate on
+ * {@link CameraCalibration#isUsableFor(int, int)} first.
+ */
+public final class LaneGeometry {
+    /** Nominal lane width used only for the metric readout; the calibration gates use ratios. */
+    public static final double DEFAULT_LANE_WIDTH_METERS = 3.5;
+    /** Distance at which the reported curvature radius is evaluated. */
+    public static final double CURVATURE_EVALUATION_METERS = 15.0;
+    /**
+     * A fitted quadratic term below this magnitude is treated as a straight lane: at 1e-4 the
+     * radius at 15 m exceeds 1 km, well past the LKAS "straight" threshold.
+     */
+    public static final double MIN_ABS_CURVATURE = 1.0e-4;
+
+    private static final double DEGREES_PER_RADIAN = 180.0 / Math.PI;
+
+    private LaneGeometry() {
+    }
+
+    /** A lane boundary sample: where the line was seen and how strong that sighting was. */
+    public record BoundarySample(double x, double confidence) {
+        public static final BoundarySample NONE = new BoundarySample(Double.NaN, 0.0);
+    }
+
+    /**
+     * Lane width measured at one image row. This is the raw observation the pitch solver consumes,
+     * so it carries both edges and the depth they were measured at.
+     */
+    public record WidthSample(double rowY, double leftX, double rightX, double confidence) {
+        /** Pixel width between the two boundaries; NaN when an edge is missing. */
+        public double widthPixels() {
+            return Double.isFinite(leftX) && Double.isFinite(rightX) ? rightX - leftX : Double.NaN;
+        }
+    }
+
+    /**
+     * Lane geometry published to the UI. {@code centerOffsetNormalized} and
+     * {@code centerOffsetMeters} are positive when the vehicle sits right of the lane centre, matching
+     * the "keep left" instruction of travel: the lane centre images to the left of the vehicle axis.
+     */
+    public record LaneSnapshot(long timestampNanos,
+                               double centerOffsetNormalized,
+                               double centerOffsetMeters,
+                               double laneWidthMeters,
+                               double curvatureRadiusMeters,
+                               int sampleCount) {
+        public static final LaneSnapshot INVALID =
+                new LaneSnapshot(0L, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0);
+
+        public boolean valid() {
+            return sampleCount > 0 && Double.isFinite(centerOffsetNormalized);
+        }
+
+        public boolean curvatureValid() {
+            return Double.isFinite(curvatureRadiusMeters);
+        }
+
+        /** True when the vehicle sits left of the lane centre, so the driver should move right. */
+        public boolean vehicleLeftOfCenter() {
+            return valid() && centerOffsetNormalized < 0.0;
+        }
+
+        /** True when the vehicle sits right of the lane centre, so the driver should move left. */
+        public boolean vehicleRightOfCenter() {
+            return valid() && centerOffsetNormalized > 0.0;
+        }
+    }
+
+    public static boolean isUsable(CameraCalibration calibration, int frameWidth, int frameHeight) {
+        return calibration != null && frameWidth > 0 && frameHeight > 0
+                && calibration.isUsableFor(frameWidth, frameHeight);
+    }
+
+    /** Ground distance of an image row under the flat-road model, or NaN when the ray misses. */
+    public static double distanceMeters(CameraCalibration calibration, double rowY) {
+        return calibration == null ? Double.NaN : calibration.estimateDistanceMeters(rowY);
+    }
+
+    /** Lateral offset of a normalized image column at the given ground depth. */
+    public static double lateralMeters(CameraCalibration calibration, double x, double zMeters,
+                                       int frameWidth, int frameHeight) {
+        if (calibration == null || !Double.isFinite(x) || !Double.isFinite(zMeters)
+                || zMeters <= 0.0) {
+            return Double.NaN;
+        }
+        double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
+        return fx > 0.0 ? (x - 0.5) * zMeters / fx : Double.NaN;
+    }
+
+    /** Horizontal focal length normalized by image width, so x in [0, 1] maps linearly. */
+    public static double focalLengthXNormalized(CameraCalibration calibration,
+                                                int frameWidth, int frameHeight) {
+        if (calibration == null || frameWidth <= 0 || frameHeight <= 0) {
+            return Double.NaN;
+        }
+        return calibration.focalLengthYNormalized() * frameHeight / frameWidth;
+    }
+
+    /** Image row that looks at the given ground distance, assuming the calibration is correct. */
+    public static double rowForDistance(CameraCalibration calibration, double distanceMeters) {
+        if (calibration == null || !Double.isFinite(distanceMeters) || distanceMeters <= 0.0) {
+            return Double.NaN;
+        }
+        double theta = Math.atan(calibration.cameraHeightMeters() / distanceMeters);
+        return calibration.principalPointYNormalized()
+                + calibration.focalLengthYNormalized()
+                * Math.tan(theta - Math.toRadians(calibration.pitchDegrees()));
+    }
+
+    /**
+     * Normalized image width of a lane of the given physical width, as seen at one image row.
+     *
+     * <p>A ground point at lateral offset {@code X} and depth {@code Z} images at
+     * {@code x = 0.5 + f_x · X / Z}, and the row looking at that depth satisfies
+     * {@code Z = H / tan(theta)} with {@code theta} the depression angle of the row. Substituting the
+     * depth gives {@code w = W · f_x · sin(theta) / H}: the width depends on the row only through the
+     * depression angle, grows with pitch, and is linear in the (uncertain) focal length.
+     *
+     * <p>Height and horizontal focal length are therefore the two error sources of any absolute lane
+     * width measurement, which is why the calibrated mounting angle is not replaced by this model.
+     */
+    public static double laneWidthModelMeters(CameraCalibration calibration, double rowY,
+                                              double pitchDegrees, double laneWidthMeters,
+                                              int frameWidth, int frameHeight) {
+        if (calibration == null || !Double.isFinite(rowY) || !Double.isFinite(pitchDegrees)
+                || !Double.isFinite(laneWidthMeters) || laneWidthMeters <= 0.0) {
+            return Double.NaN;
+        }
+        double fy = calibration.focalLengthYNormalized();
+        double height = calibration.cameraHeightMeters();
+        if (fy <= 0.0 || height <= 0.0) {
+            return Double.NaN;
+        }
+        double beta = Math.atan((rowY - calibration.principalPointYNormalized()) / fy);
+        double theta = Math.toRadians(pitchDegrees) + beta;
+        double sin = Math.sin(theta);
+        double cos = Math.cos(theta);
+        if (sin <= 1.0e-4 || cos <= 1.0e-4) {
+            return Double.NaN;
+        }
+        double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
+        return laneWidthMeters * fx * sin / height;
+    }
+
+    /** Model ratio between the two rows. See {@link #widthRatioMeasured} for what it can and cannot
+     * detect: on a flat road this ratio is independent of pitch by construction, so it is an identity
+     * check rather than a pitch sensor. */
+    public static double widthRatioModel(CameraCalibration calibration, double nearRow,
+                                         double farRow, double pitchDegrees, double laneWidthMeters,
+                                         int frameWidth, int frameHeight) {
+        // On a road descending away from the camera a larger row value is closer, so the near sample
+        // sits at the larger row. Taking these the wrong way round makes the model ratio the inverse
+        // of the measurement and the solve silently fails.
+        double near = laneWidthModelMeters(calibration, nearRow, pitchDegrees, laneWidthMeters,
+                frameWidth, frameHeight);
+        double far = laneWidthModelMeters(calibration, farRow, pitchDegrees, laneWidthMeters,
+                frameWidth, frameHeight);
+        if (!Double.isFinite(near) || !Double.isFinite(far) || far <= 0.0) {
+            return Double.NaN;
+        }
+        return near / far;
+    }
+
+    /**
+     * Ratio of the two measured widths.
+     *
+     * <p>Under the flat-road model this ratio depends only on the two image rows and the vertical
+     * focal length, not on the camera pitch: a steeper camera compresses both widths by the same
+     * factor. It is therefore <em>not</em> a pitch measurement. What it does detect is a boundary
+     * mistake, because the width prior is only valid once both tracked edges really bound the ego
+     * lane; a neighbouring lane line or a road seam moves the ratio well outside the expected band.
+     */
+    public static double widthRatioMeasured(WidthSample near, WidthSample far) {
+        if (near == null || far == null) {
+            return Double.NaN;
+        }
+        double nearWidth = near.widthPixels();
+        double farWidth = far.widthPixels();
+        if (!Double.isFinite(nearWidth) || !Double.isFinite(farWidth)
+                || nearWidth <= 0.0 || farWidth <= 0.0) {
+            return Double.NaN;
+        }
+        return nearWidth / farWidth;
+    }
+
+    /**
+     * Inverts the lane width model to obtain the pitch that would make the two lane edges sit
+     * {@code laneWidthMeters} apart at {@code rowY}. The model decreases monotonically with pitch
+     * over the supported mounting range, so a plain bisection is enough and cannot run away.
+     *
+     * <p>Accuracy is bounded by the uncertainty of the lane width prior (about 10%) and of the focal
+     * length (up to 15% for an unpublished lens), which together put roughly 2-3 degrees on a single
+     * measurement. Time averaging is what makes this usable, and it is the reason the configured
+     * mounting angle - not this solve - remains the value that gets persisted.
+     *
+     * @return the implied pitch in degrees, or NaN when {@code laneWidthMeters} cannot be produced by
+     *         any pitch inside the bracket
+     */
+    public static double solvePitchFromLaneWidth(CameraCalibration calibration, double laneWidthMeters,
+                                                 double rowY, double measuredWidthNormalized,
+                                                 int frameWidth, int frameHeight,
+                                                 double lowerPitchDegrees,
+                                                 double upperPitchDegrees) {
+        if (calibration == null || !Double.isFinite(measuredWidthNormalized)
+                || measuredWidthNormalized <= 0.0 || !(lowerPitchDegrees < upperPitchDegrees)) {
+            return Double.NaN;
+        }
+        double lowWidth = laneWidthModelMeters(calibration, rowY, lowerPitchDegrees,
+                laneWidthMeters, frameWidth, frameHeight);
+        double highWidth = laneWidthModelMeters(calibration, rowY, upperPitchDegrees,
+                laneWidthMeters, frameWidth, frameHeight);
+        if (!Double.isFinite(lowWidth) || !Double.isFinite(highWidth)
+                || (lowWidth - measuredWidthNormalized) * (highWidth - measuredWidthNormalized) > 0.0) {
+            return Double.NaN;
+        }
+        double low = lowerPitchDegrees;
+        double high = upperPitchDegrees;
+        for (int i = 0; i < 40 && high - low > 1.0e-4; i++) {
+            double mid = 0.5 * (low + high);
+            double midWidth = laneWidthModelMeters(calibration, rowY, mid, laneWidthMeters,
+                    frameWidth, frameHeight);
+            if (!Double.isFinite(midWidth)) {
+                return Double.NaN;
+            }
+            // Width grows with pitch over the supported mounting range (it peaks around 45 degrees of
+            // depression, far outside the bracket).
+            if (midWidth < measuredWidthNormalized) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        return 0.5 * (low + high);
+    }
+
+    /**
+     * Recovers the pitch from the measured near/far lane width ratio.
+     *
+     * <p>With {@code w = W · f_x · sin(theta) / H} the ratio between the two rows is
+     * {@code sin(theta_near) / sin(theta_far)}, so the physical lane width, the camera height and the
+     * focal length all cancel. That makes this the most robust pitch observable available from lane
+     * lines, and it is sensitive: over the supported mounting range the ratio moves roughly 10% per
+     * degree. The model decreases monotonically with pitch here, so a bisection is enough.
+     *
+     * @return the solved pitch in degrees, or NaN when no pitch in the bracket reproduces the ratio
+     */
+    public static double solvePitchFromRatio(CameraCalibration calibration, double measuredRatio,
+                                             double nearRow, double farRow,
+                                             int frameWidth, int frameHeight,
+                                             double lowerPitchDegrees,
+                                             double upperPitchDegrees) {
+        if (calibration == null || !Double.isFinite(measuredRatio) || measuredRatio <= 0.0
+                || !(lowerPitchDegrees < upperPitchDegrees)) {
+            return Double.NaN;
+        }
+        double lowerRatio = widthRatioModel(calibration, nearRow, farRow, lowerPitchDegrees,
+                DEFAULT_LANE_WIDTH_METERS, frameWidth, frameHeight);
+        double upperRatio = widthRatioModel(calibration, nearRow, farRow, upperPitchDegrees,
+                DEFAULT_LANE_WIDTH_METERS, frameWidth, frameHeight);
+        if (!Double.isFinite(lowerRatio) || !Double.isFinite(upperRatio)
+                || (lowerRatio - measuredRatio) * (upperRatio - measuredRatio) > 0.0) {
+            return Double.NaN;
+        }
+        double low = lowerPitchDegrees;
+        double high = upperPitchDegrees;
+        for (int i = 0; i < 40 && high - low > 1.0e-4; i++) {
+            double mid = 0.5 * (low + high);
+            double midRatio = widthRatioModel(calibration, nearRow, farRow, mid,
+                    DEFAULT_LANE_WIDTH_METERS, frameWidth, frameHeight);
+            if (!Double.isFinite(midRatio)) {
+                return Double.NaN;
+            }
+            if (midRatio > measuredRatio) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        return 0.5 * (low + high);
+    }
+
+    /**
+     * Physical lane width implied by a measurement at the configured pitch, used to report the metric
+     * offset and to detect a boundary that is not the ego lane edge. This is the exact inverse of
+     * {@link #laneWidthModelMeters}: {@code W = w · H / (f_x · sin(theta))}.
+     */
+    public static double laneWidthFromSample(CameraCalibration calibration, WidthSample sample,
+                                             double pitchDegrees, int frameWidth, int frameHeight) {
+        if (calibration == null || sample == null || !Double.isFinite(pitchDegrees)) {
+            return Double.NaN;
+        }
+        double width = sample.widthPixels();
+        if (!Double.isFinite(width) || width <= 0.0) {
+            return Double.NaN;
+        }
+        double fy = calibration.focalLengthYNormalized();
+        double height = calibration.cameraHeightMeters();
+        if (fy <= 0.0 || height <= 0.0) {
+            return Double.NaN;
+        }
+        double beta = Math.atan((sample.rowY() - calibration.principalPointYNormalized()) / fy);
+        double theta = Math.toRadians(pitchDegrees) + beta;
+        double sin = Math.sin(theta);
+        if (sin <= 1.0e-4) {
+            return Double.NaN;
+        }
+        double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
+        if (fx <= 0.0) {
+            return Double.NaN;
+        }
+        return width * height / (fx * sin);
+    }
+
+    /**
+     * Assembles the published lane geometry from the near-row width sample. The metric offset and
+     * the curvature both need the calibration to be bound to this frame size; when it is not, the
+     * normalized offset is still reported so the UI can show something useful.
+     */
+    public static LaneSnapshot snapshot(long timestampNanos, CameraCalibration calibration,
+                                        double pitchDegrees, WidthSample nearSample,
+                                        java.util.List<WidthSample> samples,
+                                        int frameWidth, int frameHeight) {
+        if (nearSample == null || !Double.isFinite(nearSample.widthPixels())
+                || nearSample.widthPixels() <= 0.0) {
+            return LaneSnapshot.INVALID;
+        }
+        double centerOffset = 0.5 * (nearSample.leftX() + nearSample.rightX()) - 0.5;
+        // Image space has the lane centre to the left of the vehicle axis when the vehicle sits right
+        // of the lane, so the published offset is the negation of the image-space one.
+        double vehicleOffsetNormalized = -centerOffset;
+        double laneWidth = laneWidthFromSample(calibration, nearSample, pitchDegrees,
+                frameWidth, frameHeight);
+        double radius = curvatureRadiusMeters(calibration, pitchDegrees, samples,
+                frameWidth, frameHeight);
+        return new LaneSnapshot(timestampNanos, vehicleOffsetNormalized,
+                Double.isFinite(laneWidth) ? vehicleOffsetNormalized * laneWidth : Double.NaN,
+                laneWidth, radius, samples == null ? 0 : samples.size());
+    }
+
+    /**
+     * Fits {@code X = a·Z² + b·Z + c} to the lane centre line and returns the radius at
+     * {@link #CURVATURE_EVALUATION_METERS}.
+     *
+     * <p>Returns NaN for a straight lane (|a| below {@link #MIN_ABS_CURVATURE}) rather than a huge
+     * radius, so the UI can distinguish "straight" from "unavailable" without a magic cutoff here.
+     */
+    public static double curvatureRadiusMeters(CameraCalibration calibration, double pitchDegrees,
+                                               java.util.List<WidthSample> samples,
+                                               int frameWidth, int frameHeight) {
+        if (calibration == null || samples == null || samples.size() < 4) {
+            return Double.NaN;
+        }
+        double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
+        if (!(fx > 0.0)) {
+            return Double.NaN;
+        }
+        int count = 0;
+        double sumZ = 0.0;
+        double sumZ2 = 0.0;
+        double sumZ3 = 0.0;
+        double sumZ4 = 0.0;
+        double sumX = 0.0;
+        double sumZX = 0.0;
+        double sumZ2X = 0.0;
+        for (WidthSample sample : samples) {
+            if (sample == null) {
+                continue;
+            }
+            double width = sample.widthPixels();
+            if (!Double.isFinite(width) || width <= 0.0) {
+                continue;
+            }
+            double z = distanceMeters(calibration, sample.rowY());
+            if (!Double.isFinite(z) || z < 4.0 || z > 60.0) {
+                continue;
+            }
+            double x = lateralMeters(calibration, 0.5 * (sample.leftX() + sample.rightX()), z,
+                    frameWidth, frameHeight);
+            if (!Double.isFinite(x)) {
+                continue;
+            }
+            count++;
+            sumZ += z;
+            sumZ2 += z * z;
+            sumZ3 += z * z * z;
+            sumZ4 += z * z * z * z;
+            sumX += x;
+            sumZX += z * x;
+            sumZ2X += z * z * x;
+        }
+        if (count < 4) {
+            return Double.NaN;
+        }
+        double[] fit = solveNormalEquations(count, sumZ, sumZ2, sumZ3, sumZ4,
+                sumX, sumZX, sumZ2X);
+        if (fit == null) {
+            return Double.NaN;
+        }
+        double a = fit[0];
+        double b = fit[1];
+        if (!Double.isFinite(a) || !Double.isFinite(b) || Math.abs(a) < MIN_ABS_CURVATURE) {
+            return Double.NaN;
+        }
+        double z = CURVATURE_EVALUATION_METERS;
+        double slope = 2.0 * a * z + b;
+        // The fit runs in screen-based ground coordinates (X to the right) while the published radius
+        // is signed in the world frame (X to the left). A road curving left puts the lane centre
+        // further right on screen as depth grows - a positive fit coefficient - and must come out as a
+        // negative radius, which is also the ISO 8855 sign convention.
+        double radius = Math.pow(1.0 + slope * slope, 1.5) / (-2.0 * a);
+        return Double.isFinite(radius) && radius != 0.0 ? radius : Double.NaN;
+    }
+
+    /**
+     * Least-squares solution of the 3x3 normal equations for a quadratic fit. Returns
+     * {@code [a, b, c]} for {@code X = a·Z² + b·Z + c}, or null when the system is singular.
+     */
+    private static double[] solveNormalEquations(int n, double sz, double sz2, double sz3,
+                                                 double sz4, double sx, double szx, double sz2x) {
+        double[][] m = {
+                {sz4, sz3, sz2, sz2x},
+                {sz3, sz2, sz, szx},
+                {sz2, sz, n, sx}
+        };
+        for (int col = 0; col < 3; col++) {
+            int pivot = col;
+            for (int row = col + 1; row < 3; row++) {
+                if (Math.abs(m[row][col]) > Math.abs(m[pivot][col])) {
+                    pivot = row;
+                }
+            }
+            if (Math.abs(m[pivot][col]) < 1.0e-9) {
+                return null;
+            }
+            double[] swap = m[col];
+            m[col] = m[pivot];
+            m[pivot] = swap;
+            double diagonal = m[col][col];
+            for (int k = col; k < 4; k++) {
+                m[col][k] /= diagonal;
+            }
+            for (int row = 0; row < 3; row++) {
+                if (row == col) {
+                    continue;
+                }
+                double factor = m[row][col];
+                if (factor == 0.0) {
+                    continue;
+                }
+                for (int k = col; k < 4; k++) {
+                    m[row][k] -= factor * m[col][k];
+                }
+            }
+        }
+        return new double[] {m[0][3], m[1][3], m[2][3]};
+    }
+
+    /** Convenience for direction text: positive curvature means the road turns left. */
+    public static String curveDirection(double curvatureRadiusMeters) {
+        if (!Double.isFinite(curvatureRadiusMeters)) {
+            return "";
+        }
+        return curvatureRadiusMeters < 0.0 ? "Left" : "Right";
+    }
+
+    static double degreesPerRadian() {
+        return DEGREES_PER_RADIAN;
+    }
+}

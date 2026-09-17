@@ -198,7 +198,8 @@ public final class AdasSimulationTest {
 
         for (AdasSimulator.SimFrame simFrame : frames) {
             AutoCalibrationLearner.StepResult step = learner.update(
-                    simFrame.lane(), simFrame.speedKmh(), current);
+                    simFrame.lane(), simFrame.speedKmh(), current, current.pitchDegrees(),
+                    WIDTH, HEIGHT);
             if (step.calibrationUpdated()) {
                 current = step.calibration();
             }
@@ -209,5 +210,12 @@ public final class AdasSimulationTest {
         assertEquals("Auto calibration must converge to CALIBRATED",
                 CalibrationStore.Status.CALIBRATED, finalStep.status());
         assertEquals("Progress must reach 100%", 100, finalStep.progressPercent());
+        // The simulated camera looks 1.5 degrees steeper than the fixture calibration, and the pitch
+        // solve must see that: the confirmed value stays the configured one, but the implied angle has
+        // to land on the simulated mounting angle.
+        assertEquals("The solve must recover the simulated mounting angle",
+                CALIBRATION.pitchDegrees() + 1.5, learner.lastSolvedPitchDegrees(), 0.5);
+        assertTrue("The confirmed value must keep the configured angle",
+                Math.abs(current.pitchDegrees() - CALIBRATION.pitchDegrees()) < 0.01);
     }
 }

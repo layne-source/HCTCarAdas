@@ -74,4 +74,47 @@ public final class AdasLogFormatTest {
         assertTrue(rendered.contains("FCW"));
         assertFalse(rendered.contains("NONE"));
     }
+
+    @Test
+    public void calibrationRendersEveryFieldAndFallsBackOnMissingValues() {
+        String line = AdasLogFormat.calibration("CALIBRATING", 35, 21,
+                AutoCalibrationLearner.REQUIRED_CONVERGENCE_SAMPLES,
+                2.441, 2.441, 8.02, 8.0, 3.48, "NONE", 0);
+        assertTrue(line.startsWith("[CALIB] status=CALIBRATING progress=35% samples=21/60"));
+        assertTrue(line.contains("measuredRatio=2.441"));
+        assertTrue(line.contains("implied=8.02°"));
+        assertTrue(line.contains("laneWidth=3.48m"));
+        assertTrue(line.contains("reject=NONE geomRejects=0"));
+
+        // Before the first usable frame every derived value is absent.
+        String empty = AdasLogFormat.calibration("WIZARD_COMPLETED", 0, 0,
+                AutoCalibrationLearner.REQUIRED_CONVERGENCE_SAMPLES,
+                Double.NaN, Double.NaN, Double.NaN, 4.0, Double.NaN,
+                "DRIVING_CONDITION", 0);
+        assertTrue(empty.contains("measuredRatio=--"));
+        assertTrue(empty.contains("implied=--°"));
+        assertTrue(empty.contains("laneWidth=--"));
+        assertTrue(empty.contains("run=4.00°"));
+    }
+
+    @Test
+    public void laneSamplingRendersEverySightedRow() {
+        java.util.List<LaneGeometry.WidthSample> samples = java.util.List.of(
+                new LaneGeometry.WidthSample(0.54, 0.41, 0.62, 0.80),
+                new LaneGeometry.WidthSample(0.82, 0.20, 0.80, 0.90));
+        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
+                0.005, 0.85, true, 0.41, 0.62, 0.20, 0.80, samples);
+
+        String line = AdasLogFormat.laneSampling(lane);
+        assertTrue(line.startsWith("[LANE] available=true"));
+        assertTrue(line.contains("r0 y=0.54"));
+        assertTrue(line.contains("r1 y=0.82"));
+        assertTrue(line.contains("w=0.210"));
+        assertFalse(line.contains("noRowsWithBothEdges"));
+
+        // A lane that is not tracked says so instead of rendering a row list.
+        assertTrue(AdasLogFormat.laneSampling(LaneDepartureDetector.Observation.UNAVAILABLE)
+                .contains("noRowsWithBothEdges"));
+        assertTrue(AdasLogFormat.laneSampling(null).contains("observation=null"));
+    }
 }

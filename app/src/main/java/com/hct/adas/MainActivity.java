@@ -36,20 +36,35 @@ public final class MainActivity extends Activity {
     private static final String TAG = "HctAdasCore";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
-    /** Fallback installation pitch when the bracket angle is unknown; self-learning refines it. */
-    private static final double INITIAL_PITCH_DEGREES = 4.0;
     /**
-     * Bounds accepted by the wizard. They mirror the learner's pitch acceptance range: a value
-     * outside it could never be reached by self-learning either, so accepting it would only store
-     * a calibration the pipeline refuses to use.
+     * Fallback installation pitch when the bracket angle is unknown. A windshield-inside mount just
+     * below the factory forward camera typically looks 6-10 degrees down at the road ahead; starting at
+     * 4 degrees would leave every drive drifting in from too shallow an angle. The learner confirms the
+     * value once lane markings are seen and reports the deviation the installer has to correct.
+     */
+    private static final double INITIAL_PITCH_DEGREES = 8.0;
+    /**
+     * Camera height above ground for the presets the wizard offers. These describe where the lens sits
+     * for a windshield-inside mount just below the factory forward camera, which is the installation
+     * this product targets; the truck value follows the same position on a much taller windshield.
+     */
+    private static final double HEIGHT_SEDAN_METERS = 1.30;
+    private static final double HEIGHT_SUV_METERS = 1.55;
+    private static final double HEIGHT_TRUCK_METERS = 2.00;
+    /**
+     * Bounds accepted by the wizard. The upper bound mirrors the lane ROI guard at the target mounting
+     * height (~14.4 deg): accepting a steeper angle would store a calibration whose every frame is then
+     * rejected for looking at the hood instead of the road.
      */
     private static final double MIN_INITIAL_PITCH_DEGREES = -5.0;
-    private static final double MAX_INITIAL_PITCH_DEGREES = 20.0;
+    private static final double MAX_INITIAL_PITCH_DEGREES = 14.0;
     /**
-     * Pitch at which the default-intrinsics vanishing point window (12.7 deg) is approached, so the
-     * wizard warns that the mounting angle may be too steep for self-learning to converge.
+     * Pitch at which the wizard warns that the mounting angle is near the limit the lane sampling band
+     * can still see: at 1.3 m of mounting height the ROI's far row drops under its minimum ground
+     * distance at about 14.4 degrees. Deliberately derived from the ROI guard rather than from a
+     * hand-picked number, which is what produced the earlier false "angle out of range" reports.
      */
-    private static final double STEEP_PITCH_WARNING_DEGREES = 12.0;
+    private static final double STEEP_PITCH_WARNING_DEGREES = 14.0;
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private UsbCameraSource cameraSource;
@@ -70,6 +85,8 @@ public final class MainActivity extends Activity {
     private final LeadVehicleTracker tracker = new LeadVehicleTracker();
     private final LeadVehicleMotionEstimator motionEstimator = new LeadVehicleMotionEstimator();
     private final LaneDepartureDetector laneDetector = new LaneDepartureDetector();
+    /** Last lane measurement, kept so the overlay can fade a dropped lane instead of blinking. */
+    private LaneGeometry.LaneSnapshot heldLaneGeometry = LaneGeometry.LaneSnapshot.INVALID;
     private final AdasDecisionEngine decisionEngine = new AdasDecisionEngine();
     private AlertAudio alertAudio;
     private LocationManager locationManager;
@@ -83,9 +100,17 @@ public final class MainActivity extends Activity {
     private record Analysis(VehicleDetector.Result detections, LeadVehicleTracker.Snapshot tracking,
                             LeadVehicleMotionEstimator.Measurement motion,
                             LaneDepartureDetector.Observation lane,
+                            LaneGeometry.LaneSnapshot laneGeometry,
                             AdasDecisionEngine.Decision decision, double speedKmh) { }
 
     private long lastHeartbeatLogNanos;
+    private long lastLaneLogNanos;
+    /**
+     * Whether the per-second lane sampling dump is emitted. {@code Log.isLoggable} lets an installer
+     * turn it on with {@code adb shell setprop log.tag.HctAdasCore DEBUG} without a rebuild; by default
+     * it stays off so a normal drive is not flooded.
+     */
+    private final boolean laneSamplingLogging = Log.isLoggable(TAG, Log.DEBUG);
     private LeadVehicleTracker.State previousTrackingState = LeadVehicleTracker.State.NONE;
     private long previousTargetId = 0L;
     private long previousDecisionTargetId;
@@ -226,8 +251,10 @@ public final class MainActivity extends Activity {
                     }
                     LaneDepartureDetector.Observation lane = laneDetector.detect(
                             frame.nv21(), frame.width(), frame.height());
+                    logLaneSampling(lane);
                     double speed = validSpeedKmh() ? egoSpeedKmh : Double.NaN;
-                    processAdasFrame(result, lane, speed, frameGeneration, sessionStart, false);
+                    processAdasFrame(result, lane, speed, lanePitchDegrees(result.frameWidth(),
+                            result.frameHeight()), frameGeneration, sessionStart, false);
                 }
             }
 
@@ -338,6 +365,37 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** One calibration line per second while the pitch is being learned, independent of the sample count. */
+    private void logCalibrationHeartbeat() {
+        if (calibrationStatus == CalibrationStore.Status.CALIBRATED
+                || calibrationStatus == CalibrationStore.Status.UNCONFIGURED) {
+            return;
+        }
+        CameraCalibration active = calibration;
+        double configuredPitch = active == null ? Double.NaN : active.pitchDegrees();
+        Log.i(TAG, AdasLogFormat.calibration(calibrationStatus.name(), calibrationProgress,
+                autoCalibrationLearner.windowSize(),
+                AutoCalibrationLearner.REQUIRED_CONVERGENCE_SAMPLES,
+                autoCalibrationLearner.lastMeasuredRatio(), autoCalibrationLearner.lastModelRatio(),
+                autoCalibrationLearner.lastSolvedPitchDegrees(), configuredPitch,
+                autoCalibrationLearner.lastLaneWidthMeters(),
+                autoCalibrationLearner.lastRejection().name(),
+                autoCalibrationLearner.consecutiveGeometricRejections()));
+    }
+
+    /** One lane sampling dump per second while the installer has enabled verbose logging. */
+    private void logLaneSampling(LaneDepartureDetector.Observation lane) {
+        if (!laneSamplingLogging) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - lastLaneLogNanos < 1_000_000_000L) {
+            return;
+        }
+        lastLaneLogNanos = now;
+        Log.d(TAG, AdasLogFormat.laneSampling(lane));
+    }
+
     private void renderMetrics() {
         long now = System.nanoTime();
         long captured = cameraSource.capturedFrames();
@@ -372,6 +430,7 @@ public final class MainActivity extends Activity {
                     measurementQueueWaitMs(workerSnapshot),
                     measurementProcessingMs(workerSnapshot),
                     speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
+            logCalibrationHeartbeat();
         }
         double fps = (captured - previousCaptured) * 1_000_000_000.0
                 / Math.max(1L, now - previousMetricsTime);
@@ -400,8 +459,9 @@ public final class MainActivity extends Activity {
             overlayView.setResult(null, null);
         } else if (fresh) {
             fitPreview(result);
+            AdasDecisionEngine.Decision shown = displayDecision(analysis, now);
             overlayView.setResult(result, analysis.tracking(), analysis.lane(),
-                    displayDecision(analysis, now), analysis.motion().visible(),
+                    analysis.laneGeometry(), shown, analysis.motion().visible(),
                     Double.isFinite(displaySpeedKmh(analysis)));
             metricsView.setText(stream + "\n" + getString(R.string.detection_metrics,
                     result.vehicles().size(), result.inferenceNanos() / 1_000_000.0)
@@ -492,26 +552,76 @@ public final class MainActivity extends Activity {
                 ? (shown.headwayWarning() ? "HMW 条件" : "无预警")
                 : "事件: " + shown.events();
         String laneWarning = shown.laneWarning() ? " · LDW 条件" : "";
-        String risk = !Double.isFinite(speed) && !shown.headwayWarning()
-                ? "预警受限" : riskStatus(shown);
         return getString(R.string.measurement_status, distance, ttcText,
-                risk + " · " + speedText + " · " + warning + laneWarning + " · " + lane);
+                speedText + " · " + warning + laneWarning + " · " + lane)
+                + " · " + composeReadouts(analysis, shown) + " · " + getString(R.string.estimated_note);
     }
 
     private double displaySpeedKmh(Analysis analysis) {
         return simulator.isRunning() ? analysis.speedKmh()
                 : validSpeedKmh() && Double.isFinite(analysis.speedKmh()) ? egoSpeedKmh : Double.NaN;
     }
-    private String riskStatus(AdasDecisionEngine.Decision decision) {
-        if (decision.collisionDanger() || decision.headwayCritical()
-                || decision.events().contains(AdasDecisionEngine.Alert.FCW)
-                || decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
-            return "危险";
+    /**
+     * The three driver-facing readouts (FCWS, LDWS, LKAS) as fixed-width lines so the values line up
+     * while the text changes length. Wording and colours come from {@link AdasUiStatusMapper}; no
+     * decision threshold is evaluated here.
+     */
+    private String composeReadouts(Analysis analysis, AdasDecisionEngine.Decision shown) {
+        double ttc = Double.NaN;
+        double distance = Double.NaN;
+        boolean targetVisible = false;
+        if (analysis != null && analysis.motion() != null && analysis.motion().visible()) {
+            targetVisible = true;
+            distance = analysis.motion().distanceMeters();
+            if (analysis.motion().closingSpeedMps() > 0.0) {
+                ttc = distance / analysis.motion().closingSpeedMps();
+            }
         }
-        if (decision.headwayWarning() || decision.laneWarning()) {
-            return "注意";
+        double speed = analysis == null ? Double.NaN : displaySpeedKmh(analysis);
+        AdasUiStatusMapper.Status status = AdasUiStatusMapper.forward(shown, targetVisible,
+                ttc, distance, speed, shown.headwayWarning());
+        LaneGeometry.LaneSnapshot lane = analysis == null ? null : analysis.laneGeometry();
+        boolean laneSupported = calibrationStatus == CalibrationStore.Status.CALIBRATED
+                || simulator.isRunning();
+        AdasUiStatusMapper.LaneStatus laneStatus = AdasUiStatusMapper.lane(lane, laneSupported,
+                shown.laneWarning());
+        return "\nFCWS " + status.riskText() + " (" + status.detail() + ")"
+                + "\nLDWS " + laneStatus.departure() + laneDetail(lane)
+                + "\nLKAS " + laneStatus.keeping();
+    }
+
+    /** Numeric lane detail: signed offset (right negative) and the average curvature radius. */
+    private String laneDetail(LaneGeometry.LaneSnapshot lane) {
+        if (lane == null || !lane.valid()) {
+            return "";
         }
-        return "正常";
+        StringBuilder builder = new StringBuilder(String.format(Locale.ROOT,
+                " · Offset %+.2f", lane.centerOffsetMeters()));
+        builder.append(" m");
+        if (Double.isFinite(lane.laneWidthMeters())) {
+            builder.append(String.format(Locale.ROOT, " (lane %.1f m)", lane.laneWidthMeters()));
+        }
+        builder.append(lane.curvatureValid()
+                ? String.format(Locale.ROOT, " · R %.0f m", Math.abs(lane.curvatureRadiusMeters()))
+                : " · R straight");
+        return builder.toString();
+    }
+
+    /** Risk band of the current decision, used for the colour of the overlay text. */
+    private int riskColor(AdasDecisionEngine.Decision decision, Analysis analysis) {
+        double ttc = Double.NaN;
+        double distance = Double.NaN;
+        boolean targetVisible = false;
+        if (analysis != null && analysis.motion() != null && analysis.motion().visible()) {
+            targetVisible = true;
+            distance = analysis.motion().distanceMeters();
+            if (analysis.motion().closingSpeedMps() > 0.0) {
+                ttc = distance / analysis.motion().closingSpeedMps();
+            }
+        }
+        return AdasUiStatusMapper.forward(decision, targetVisible, ttc, distance,
+                analysis == null ? Double.NaN : displaySpeedKmh(analysis),
+                decision.headwayWarning()).riskColor();
     }
 
     private AdasDecisionEngine.Decision displayDecision(Analysis analysis, long now) {
@@ -634,18 +744,18 @@ public final class MainActivity extends Activity {
                     calibration.imageWidth(), calibration.imageHeight()));
             calibrationView.setTextColor(0xFFFF8A80);
         } else if (calibrationStatus == CalibrationStore.Status.WIZARD_COMPLETED) {
-            if (showAngleOutOfRangeHint()) {
+            if (showAngleOutOfRangeHint() || showLaneObservationHint()) {
                 return;
             }
             calibrationView.setText(getString(R.string.calibration_wizard_done,
-                    calibration.cameraHeightMeters()));
+                    calibration.cameraHeightMeters()) + calibrationProgressDetail());
             calibrationView.setTextColor(0xFF80DEEA);
         } else if (calibrationStatus == CalibrationStore.Status.CALIBRATING) {
-            if (showAngleOutOfRangeHint()) {
+            if (showAngleOutOfRangeHint() || showLaneObservationHint()) {
                 return;
             }
             calibrationView.setText(getString(R.string.calibration_in_progress,
-                    calibrationProgress));
+                    calibrationProgress) + calibrationProgressDetail());
             calibrationView.setTextColor(0xFF80DEEA);
         } else if (calibrationStatus == CalibrationStore.Status.CALIBRATED) {
             calibrationView.setText(getString(R.string.calibration_loaded,
@@ -659,6 +769,10 @@ public final class MainActivity extends Activity {
      * A sustained run of geometric rejections cannot be waited out: the configured pitch keeps the
      * lane ROI off the road, so the learner never even leaves the wizard state. Both pre-learning
      * states must surface that, otherwise the user is told to keep driving forever.
+     *
+     * <p>Only a genuinely collapsed ROI may raise this hint. A lane observation that merely cannot be
+     * solved is a different failure and is reported separately, because telling the user to re-aim a
+     * correctly mounted camera is worse than saying nothing.
      */
     private boolean showAngleOutOfRangeHint() {
         if (autoCalibrationLearner.consecutiveGeometricRejections()
@@ -670,9 +784,73 @@ public final class MainActivity extends Activity {
         return true;
     }
 
+    /**
+     * Explains why an observation was dropped without asking the user to touch the mounting angle,
+     * except when the solved pitch disagrees with the configured one by more than the tolerance.
+     */
+    private boolean showLaneObservationHint() {
+        AutoCalibrationLearner.Rejection rejection = autoCalibrationLearner.lastRejection();
+        if (rejection == AutoCalibrationLearner.Rejection.OBSERVATION_INCOHERENT) {
+            double solved = autoCalibrationLearner.lastSolvedPitchDegrees();
+            CameraCalibration active = calibration;
+            if (Double.isFinite(solved) && active != null
+                    && Math.abs(solved - active.pitchDegrees())
+                    > AutoCalibrationLearner.MAX_PITCH_DEVIATION_DEGREES) {
+                calibrationView.setText(getString(R.string.calibration_reaim,
+                        solved - active.pitchDegrees(), solved));
+                calibrationView.setTextColor(0xFFFF8A80);
+                return true;
+            }
+            calibrationView.setText(R.string.calibration_observation_inconsistent);
+            calibrationView.setTextColor(0xFFFFD180);
+            return true;
+        }
+        if (rejection == AutoCalibrationLearner.Rejection.DRIVING_CONDITION) {
+            calibrationView.setText(R.string.calibration_waiting_conditions);
+            calibrationView.setTextColor(0xFF80DEEA);
+            return true;
+        }
+        return false;
+    }
+
+    /** Compact progress line: window fill plus the measured/model lane width ratio. */
+    private String calibrationProgressDetail() {
+        StringBuilder builder = new StringBuilder();
+        double measured = autoCalibrationLearner.lastMeasuredRatio();
+        double model = autoCalibrationLearner.lastModelRatio();
+        if (Double.isFinite(measured)) {
+            builder.append(String.format(Locale.ROOT, " · 车道宽比 %.2f", measured));
+            if (Double.isFinite(model)) {
+                builder.append(String.format(Locale.ROOT, " (模型 %.2f)", model));
+            }
+        }
+        double solved = autoCalibrationLearner.lastSolvedPitchDegrees();
+        if (Double.isFinite(solved)) {
+            builder.append(String.format(Locale.ROOT, " · 解算俯仰 %.2f°", solved));
+        }
+        return builder.toString();
+    }
+
+    /**
+     * Pitch used to interpret the newest frame: only a converged calibration may turn the lane geometry
+     * into metric output, because the metric readout is what the driver acts on. Before convergence the
+     * geometry is still reported in normalized form by the progress screen.
+     */
+    private double lanePitchDegrees(int frameWidth, int frameHeight) {
+        CameraCalibration active = calibration;
+        if (active == null || !active.isUsableFor(frameWidth, frameHeight)) {
+            return Double.NaN;
+        }
+        if (calibrationStatus != CalibrationStore.Status.CALIBRATED) {
+            return Double.NaN;
+        }
+        return active.pitchDegrees();
+    }
+
     private synchronized void processAdasFrame(VehicleDetector.Result result,
                                                LaneDepartureDetector.Observation lane,
                                                double speed,
+                                               double framePitchDegrees,
                                                long frameGeneration,
                                                long frameSessionStart,
                                                boolean simulationFrame) {
@@ -700,7 +878,8 @@ public final class MainActivity extends Activity {
                 && (!simulationFrame || simulator.currentScenario() == AdasSimulator.Scenario.AUTO_CALIBRATION)
                 && learningCalibration.isUsableFor(result.frameWidth(), result.frameHeight())) {
             AutoCalibrationLearner.StepResult step = autoCalibrationLearner.update(
-                    lane, speed, learningCalibration);
+                    lane, speed, learningCalibration, framePitchDegrees,
+                    result.frameWidth(), result.frameHeight());
             if (step.calibrationUpdated()) {
                 calibration = step.calibration();
                 calibrationStatus = step.status();
@@ -722,6 +901,8 @@ public final class MainActivity extends Activity {
         }
         LeadVehicleMotionEstimator.Measurement motion = motionEstimator.update(
                 tracking, activeCalib, result.frameWidth(), result.frameHeight());
+        LaneGeometry.LaneSnapshot laneGeometry = laneSnapshot(lane, result.frameWidth(),
+                result.frameHeight());
 
         boolean hasTarget = (tracking.state() == LeadVehicleTracker.State.TRACKING
                 || tracking.state() == LeadVehicleTracker.State.LOST);
@@ -780,7 +961,41 @@ public final class MainActivity extends Activity {
         if (alertAudio != null) {
             alertAudio.play(decision.events());
         }
-        latestAnalysis = new Analysis(result, tracking, motion, lane, decision, speed);
+        latestAnalysis = new Analysis(result, tracking, motion, lane, laneGeometry, decision, speed);
+    }
+
+    /**
+     * Lane geometry published to the UI. Curvature and the metric offset need a converged pitch, but
+     * the normalized offset is still reported beforehand so the calibration progress screen can show
+     * the lane centre marker.
+     *
+     * <p>When a frame carries no lane, the previous measurement is returned unchanged: the overlay
+     * fades it out against its own timestamp, so one dropped frame no longer makes the corridor blink.
+     */
+    private LaneGeometry.LaneSnapshot laneSnapshot(LaneDepartureDetector.Observation lane,
+                                                   int frameWidth, int frameHeight) {
+        if (lane == null || !lane.available() || lane.widthSamples().isEmpty()) {
+            return heldLaneGeometry;
+        }
+        CameraCalibration active = calibration;
+        double pitch = lanePitchDegrees(frameWidth, frameHeight);
+        LaneGeometry.WidthSample near = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (LaneGeometry.WidthSample sample : lane.widthSamples()) {
+            double distance = Math.abs(sample.rowY() - LaneDepartureDetector.ROI_BOTTOM_ROW);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                near = sample;
+            }
+        }
+        if (near == null) {
+            return heldLaneGeometry;
+        }
+        LaneGeometry.LaneSnapshot snapshot = LaneGeometry.snapshot(
+                System.currentTimeMillis(), active, pitch, near, lane.widthSamples(),
+                frameWidth, frameHeight);
+        heldLaneGeometry = snapshot;
+        return snapshot;
     }
 
     private void postCalibrationOverlay(long frameGeneration) {
@@ -853,7 +1068,8 @@ public final class MainActivity extends Activity {
             simulationSnapshot = new SimulationSnapshot(calibration, calibrationStatus);
         }
         // Synthetic boxes use this fixture, independent of the real camera's saved calibration.
-        calibration = CameraCalibration.fromWizard(width, height, 1.25, 90.0, 4.0);
+        calibration = CameraCalibration.fromWizard(width, height, HEIGHT_SEDAN_METERS, 90.0,
+                INITIAL_PITCH_DEGREES);
         calibrationStatus = scenario == AdasSimulator.Scenario.AUTO_CALIBRATION
                 ? CalibrationStore.Status.WIZARD_COMPLETED : CalibrationStore.Status.CALIBRATED;
         calibrationProgress = calibrationStatus == CalibrationStore.Status.CALIBRATED ? 100 : 0;
@@ -869,6 +1085,8 @@ public final class MainActivity extends Activity {
             public void onFrame(AdasSimulator.SimFrame simFrame) {
                 statusView.setText("【室内模拟】" + simFrame.description());
                 processAdasFrame(simFrame.detections(), simFrame.lane(), simFrame.speedKmh(),
+                        lanePitchDegrees(simFrame.detections().frameWidth(),
+                                simFrame.detections().frameHeight()),
                         resultsGeneration, acceptFramesAfterNanos, true);
             }
 
@@ -913,7 +1131,7 @@ public final class MainActivity extends Activity {
         form.setPadding(padding, padding / 2, padding, padding / 2);
 
         TextView vehicleLabel = new TextView(this);
-        vehicleLabel.setText("1. 车辆类型与安装高度 (米):");
+        vehicleLabel.setText("1. 安装位置（镜头镜片离地高度）:");
         vehicleLabel.setTextSize(14f);
         vehicleLabel.setTextColor(0xFFFFFFFF);
         form.addView(vehicleLabel);
@@ -921,11 +1139,11 @@ public final class MainActivity extends Activity {
         RadioGroup vehicleGroup = new RadioGroup(this);
         vehicleGroup.setOrientation(RadioGroup.HORIZONTAL);
         RadioButton rbSedan = new RadioButton(this);
-        rbSedan.setText("轿车 (1.25m)");
+        rbSedan.setText("轿车 1.30m");
         RadioButton rbSuv = new RadioButton(this);
-        rbSuv.setText("SUV (1.45m)");
+        rbSuv.setText("SUV 1.55m");
         RadioButton rbTruck = new RadioButton(this);
-        rbTruck.setText("货车 (1.75m)");
+        rbTruck.setText("货车 2.00m");
         RadioButton rbCustom = new RadioButton(this);
         rbCustom.setText("自定义");
         vehicleGroup.addView(rbSedan);
@@ -934,18 +1152,18 @@ public final class MainActivity extends Activity {
         vehicleGroup.addView(rbCustom);
         form.addView(vehicleGroup);
 
-        EditText customHeightField = numberField("输入自定义离地高度(米，如 1.30)");
+        EditText customHeightField = numberField("镜头镜片到地面的垂直距离(米，如 1.35)");
         customHeightField.setVisibility(View.GONE);
         form.addView(customHeightField);
 
         rbSedan.setChecked(true);
         if (calibration != null) {
             double h = calibration.cameraHeightMeters();
-            if (Math.abs(h - 1.25) < 0.05) {
+            if (Math.abs(h - HEIGHT_SEDAN_METERS) < 0.05) {
                 rbSedan.setChecked(true);
-            } else if (Math.abs(h - 1.45) < 0.05) {
+            } else if (Math.abs(h - HEIGHT_SUV_METERS) < 0.05) {
                 rbSuv.setChecked(true);
-            } else if (Math.abs(h - 1.75) < 0.05) {
+            } else if (Math.abs(h - HEIGHT_TRUCK_METERS) < 0.05) {
                 rbTruck.setChecked(true);
             } else {
                 rbCustom.setChecked(true);
@@ -953,6 +1171,12 @@ public final class MainActivity extends Activity {
                 customHeightField.setText(Double.toString(h));
             }
         }
+        TextView heightNote = new TextView(this);
+        heightNote.setText("• 挡风玻璃内侧、原车前视摄像头下方：轿车约 1.30m，SUV 约 1.55m，货车约 2.00m\n"
+                + "• 高度只影响距离尺度，粗选即可：偏 0.2m 约带来 16% 的距离偏差");
+        heightNote.setTextSize(12f);
+        heightNote.setTextColor(0xFFB0BEC5);
+        form.addView(heightNote);
         vehicleGroup.setOnCheckedChangeListener((group, checkedId) -> {
             customHeightField.setVisibility(checkedId == rbCustom.getId() ? View.VISIBLE : View.GONE);
         });
@@ -987,27 +1211,36 @@ public final class MainActivity extends Activity {
         }
         form.addView(fovGroup);
 
+        TextView fovNote = new TextView(this);
+        fovNote.setText("• 查镜头规格书；查不到先用 90°\n"
+                + "• 填错的后果：车道宽读数会长期偏大（HFOV 填小了）或偏小（填大了），据此回改");
+        fovNote.setTextSize(12f);
+        fovNote.setTextColor(0xFFB0BEC5);
+        form.addView(fovNote);
+
         TextView pitchLabel = new TextView(this);
         pitchLabel.setText("\n3. 初始俯仰角 (度，向下为正):");
         pitchLabel.setTextSize(14f);
         pitchLabel.setTextColor(0xFFFFFFFF);
         form.addView(pitchLabel);
 
-        EditText pitchField = numberField("默认 4.0（支架未定角度时先用默认值）");
+        EditText pitchField = numberField("默认 8.0（挡风玻璃内侧安装的典型值）");
         double pitchToShow = calibration != null && calibration.isUsableFor(width, height)
                 ? calibration.pitchDegrees() : INITIAL_PITCH_DEGREES;
         pitchField.setText(Double.toString(pitchToShow));
         form.addView(pitchField);
 
         TextView pitchNote = new TextView(this);
-        pitchNote.setText("• 已知安装角度时直接填，可省去自学习等待\n"
-                + "• 未知则保持默认：上路正常行驶后自动收敛，无需精确测量");
+        pitchNote.setText("• 知道支架角度就直接填；不知道保持 8.0 即可\n"
+                + "• 上路后本机会用车道线测出实际角度，若偏差超过 ±4° 会提示你调多少度");
         pitchNote.setTextSize(12f);
         pitchNote.setTextColor(0xFFB0BEC5);
         form.addView(pitchNote);
 
         TextView guideNote = new TextView(this);
-        guideNote.setText("\n4. 物理对准提示:\n• 调整镜头使车头机盖露出在屏幕下方参考线处\n• 确保道路远方处于中间黄色地平线附近\n• 拧紧支架螺丝保存后，上路正常行驶自动收敛俯仰角");
+        guideNote.setText("\n4. 物理对准提示:\n• 调整镜头使车头机盖露出在屏幕下方参考线处\n"
+                + "• 确保道路远方处于中间黄色地平线附近\n"
+                + "• 拧紧支架螺丝保存后，上路行驶几分钟即可完成验证");
         guideNote.setTextSize(12f);
         guideNote.setTextColor(0xFFB0BEC5);
         form.addView(guideNote);
@@ -1019,17 +1252,17 @@ public final class MainActivity extends Activity {
                 .setTitle("ADAS 摄像头安装向导（" + width + "×" + height + "）")
                 .setView(scrollView)
                 .setNegativeButton("取消", null)
-                .setPositiveButton("保存并开启自学习", (dialog, which) -> {
+                .setPositiveButton("保存并开始验证", (dialog, which) -> {
                     try {
                         double heightMeters;
                         if (rbCustom.isChecked()) {
                             heightMeters = parse(customHeightField);
                         } else if (rbSuv.isChecked()) {
-                            heightMeters = 1.45;
+                            heightMeters = HEIGHT_SUV_METERS;
                         } else if (rbTruck.isChecked()) {
-                            heightMeters = 1.75;
+                            heightMeters = HEIGHT_TRUCK_METERS;
                         } else {
-                            heightMeters = 1.25;
+                            heightMeters = HEIGHT_SEDAN_METERS;
                         }
 
                         double hfov = rb120.isChecked() ? 120.0 : (rb100.isChecked() ? 100.0 : 90.0);
@@ -1040,8 +1273,8 @@ public final class MainActivity extends Activity {
 
                         applyCameraCalibration(next);
                         Toast.makeText(this, initialPitch >= STEEP_PITCH_WARNING_DEGREES
-                                ? "向导配置已保存！当前俯仰角较大，若标定栏未开始收敛请按提示调整支架角度"
-                                : "向导配置已保存！请上路以 >35km/h 正常行驶以完成自标定",
+                                ? "向导配置已保存！俯仰角偏大，若标定栏提示需调整角度请按提示微调支架"
+                                : "向导配置已保存！请上路以 >35km/h 在本车道居中行驶几分钟完成验证",
                                 Toast.LENGTH_LONG).show();
                     } catch (RuntimeException failure) {
                         Toast.makeText(this, "参数错误: " + failure.getMessage(), Toast.LENGTH_LONG).show();
@@ -1180,6 +1413,7 @@ public final class MainActivity extends Activity {
         tracker.reset();
         motionEstimator.reset();
         laneDetector.reset();
+        heldLaneGeometry = LaneGeometry.LaneSnapshot.INVALID;
         autoCalibrationLearner.resetSamples();
         int progress = autoCalibrationLearner.progress();
         if (calibrationProgress != progress) {

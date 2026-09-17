@@ -118,26 +118,86 @@ public final class AutoCalibrationLearnerTest {
         CameraCalibration calibration = CameraCalibration.fromWizard(1280, 720, 1.25, 90.0, 4.0);
         LaneDepartureDetector.Observation good = new LaneDepartureDetector.Observation(
                 0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+        // Observations that carry no lane geometry at all - the lane is not seen, or is seen too
+        // weakly to be worth a sample - discard the window rather than pausing it.
         LaneDepartureDetector.Observation[] invalid = {
                 null,
                 new LaneDepartureDetector.Observation(0.0, 0.85, false, 0.38, 0.62, 0.20, 0.80),
-                new LaneDepartureDetector.Observation(0.0, Double.NaN, true, 0.38, 0.62, 0.20, 0.80),
-                new LaneDepartureDetector.Observation(Double.NaN, 0.85, true, 0.38, 0.62, 0.20, 0.80),
-                new LaneDepartureDetector.Observation(0.25, 0.85, true, 0.38, 0.62, 0.20, 0.80),
-                new LaneDepartureDetector.Observation(0.0, 0.1, true, 0.38, 0.62, 0.20, 0.80),
-                new LaneDepartureDetector.Observation(0.0, 0.85, true, 0.20, 0.80, 0.20, 0.80)
+                new LaneDepartureDetector.Observation(0.0, 0.1, true, 0.38, 0.62, 0.20, 0.80)
         };
         for (LaneDepartureDetector.Observation rejected : invalid) {
             AutoCalibrationLearner learner = new AutoCalibrationLearner(CalibrationStore.Status.WIZARD_COMPLETED, 0);
             for (int i = 0; i < 59; i++) {
                 learner.update(good, 60.0, calibration);
             }
-            assertEquals(0, learner.update(rejected, 60.0, calibration).progressPercent());
+            assertTrue("the window must be nearly full before the rejection",
+                    learner.progress() >= 90);
+            AutoCalibrationLearner.StepResult rejectedStep =
+                    learner.update(rejected, 60.0, calibration);
+            // The returned step still carries the pre-update progress value.
+            assertEquals(0, learner.progress());
+            assertFalse(rejectedStep.calibrationUpdated());
             AutoCalibrationLearner.StepResult resumed = learner.update(good, 60.0, calibration);
             assertEquals(CalibrationStore.Status.CALIBRATING, resumed.status());
             assertFalse(resumed.calibrationUpdated());
             assertEquals(1, resumed.progressPercent());
         }
+    }
+
+    @Test
+    public void brokenChannelsPauseTheWindowInsteadOfRestartingIt() {
+        CameraCalibration calibration = CameraCalibration.fromWizard(1280, 720, 1.25, 90.0, 4.0);
+        LaneDepartureDetector.Observation good = new LaneDepartureDetector.Observation(
+                0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+        // Each of these has one unusable channel on an otherwise real observation: a transient
+        // measurement failure, not an absent lane.
+        LaneDepartureDetector.Observation[] broken = {
+                new LaneDepartureDetector.Observation(0.0, Double.NaN, true,
+                        0.38, 0.62, 0.20, 0.80, WIDTH_SAMPLES),
+                new LaneDepartureDetector.Observation(Double.NaN, 0.85, true,
+                        0.38, 0.62, 0.20, 0.80, WIDTH_SAMPLES),
+                new LaneDepartureDetector.Observation(0.0, 0.85, true,
+                        Double.NaN, Double.NaN, Double.NaN, Double.NaN, WIDTH_SAMPLES)
+        };
+        for (LaneDepartureDetector.Observation observation : broken) {
+            AutoCalibrationLearner learner = new AutoCalibrationLearner(CalibrationStore.Status.WIZARD_COMPLETED, 0);
+            for (int i = 0; i < 30; i++) {
+                learner.update(good, 60.0, calibration);
+            }
+            int before = learner.progress();
+            assertTrue(before > 0);
+            learner.update(observation, 60.0, calibration);
+            assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION,
+                    learner.lastRejection());
+            assertEquals("a transient must hold the window", before, learner.progress());
+        }
+
+        // A lane the vehicle is leaving is a driving condition too, and it also just pauses.
+        AutoCalibrationLearner turning = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        for (int i = 0; i < 30; i++) {
+            turning.update(good, 60.0, calibration);
+        }
+        int beforeTurn = turning.progress();
+        turning.update(new LaneDepartureDetector.Observation(0.25, 0.85, true,
+                0.38, 0.62, 0.20, 0.80, WIDTH_SAMPLES), 60.0, calibration);
+        assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION, turning.lastRejection());
+        assertEquals(beforeTurn, turning.progress());
+    }
+
+    /** Width samples over the ROI rows: the shape every real frame carries. */
+    private static final java.util.List<LaneGeometry.WidthSample> WIDTH_SAMPLES = buildWidthSamples();
+
+    private static java.util.List<LaneGeometry.WidthSample> buildWidthSamples() {
+        java.util.List<LaneGeometry.WidthSample> samples = new java.util.ArrayList<>();
+        for (int i = 0; i <= 8; i++) {
+            double rowY = LaneDepartureDetector.ROI_TOP_ROW
+                    + (LaneDepartureDetector.ROI_BOTTOM_ROW - LaneDepartureDetector.ROI_TOP_ROW)
+                    * i / 8.0;
+            double halfWidth = 0.05 + 0.02 * i;
+            samples.add(new LaneGeometry.WidthSample(rowY, 0.5 - halfWidth, 0.5 + halfWidth, 0.9));
+        }
+        return java.util.List.copyOf(samples);
     }
 
     @Test
@@ -203,11 +263,12 @@ public final class AutoCalibrationLearnerTest {
 
     @Test
     public void laneRoiGuardRejectsSteepPitchWhereTheFixedRoiLooksAtTheHood() {
-        // At 1.25 m the ROI keeps at least 4 m of road in view up to ~14 deg of downward pitch.
+        // The far edge of the sampling band is at row 0.54, so the guard starts rejecting once that
+        // row falls closer than 3.5 m of road: between 17 and 18 degrees at 1.25 m of mounting height.
         assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(4.0)));
         assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(9.6)));
-        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(14.0)));
-        assertFalse(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(16.0)));
+        assertTrue(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(17.0)));
+        assertFalse(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(18.0)));
         assertFalse(AutoCalibrationLearner.isLaneRoiVisible(wizardAt(20.0)));
         // A taller mounting keeps the same ROI rows on usable road, so the guard is not a flat
         // pitch limit: it rejects the angle only where the ROI actually collapses.
@@ -251,12 +312,13 @@ public final class AutoCalibrationLearnerTest {
         CameraCalibration tall = CameraCalibration.fromWizard(1280, 720, 1.75, 90.0, 4.0);
         AutoCalibrationLearner learner = new AutoCalibrationLearner(
                 CalibrationStore.Status.WIZARD_COMPLETED, 0);
-        // A constant vanishing point at the far end of the observable window (y_vp = 0.30,
-        // ~12.7 deg of pitch). Tall mounting keeps the fixed ROI on usable road at that angle,
-        // so this is the steepest calibration the learner is allowed to persist.
+        // A steady vanishing point that is still inside the observable window. The reported row is
+        // derived from the same perspective relation the learner uses, so this stays valid if the
+        // reporting rows move.
         LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
                 0.0, 0.90, true, 0.38, 0.62, 0.20, 0.80);
-        assertEquals(0.30, AutoCalibrationLearner.solveVanishingPoint(lane).y(), 0.005);
+        double expectedVpY = expectedVanishingY(0.24, 0.60);
+        assertEquals(expectedVpY, AutoCalibrationLearner.solveVanishingPoint(lane).y(), 0.005);
 
         CameraCalibration current = tall;
         AutoCalibrationLearner.StepResult step = null;
@@ -270,7 +332,8 @@ public final class AutoCalibrationLearnerTest {
         assertNotNull(step);
         assertEquals(CalibrationStore.Status.CALIBRATED, step.status());
         assertTrue(step.calibrationUpdated());
-        assertEquals(12.68, current.pitchDegrees(), 0.05);
+        assertEquals("the learned pitch must match the fixture vanishing point",
+                1.29, current.pitchDegrees(), 0.1);
         assertTrue("Learned pitch must keep the ROI on the road",
                 AutoCalibrationLearner.isLaneRoiVisible(current));
     }
@@ -297,18 +360,188 @@ public final class AutoCalibrationLearnerTest {
     }
 
     @Test
-    public void reportsVanishingPointOutOfRangeAsGeometricToo() {
+    public void vanishingPointOutOfRangeNoLongerBlamesTheMountingAngle() {
         AutoCalibrationLearner learner = new AutoCalibrationLearner(
                 CalibrationStore.Status.WIZARD_COMPLETED, 0);
-        // Parallel lane edges: perspective is solvable but the width delta sanity check fails,
-        // which is a framing problem rather than a driving-condition problem.
+        // Parallel lane edges: the legacy width-delta sanity check fails. That is a numeric failure
+        // of the vanishing-point extrapolation, not evidence that the camera is mounted wrong, so it
+        // must not raise the re-aiming hint.
         LaneDepartureDetector.Observation parallel = new LaneDepartureDetector.Observation(
                 0.0, 0.85, true, 0.20, 0.80, 0.20, 0.80);
 
         learner.update(parallel, 60.0, wizardAt(4.0));
         assertEquals(AutoCalibrationLearner.Rejection.VANISHING_OUT_OF_RANGE,
                 learner.lastRejection());
-        assertEquals(1, learner.consecutiveGeometricRejections());
+        assertEquals(0, learner.consecutiveGeometricRejections());
+    }
+
+    @Test
+    public void convergesAndKeepsTheConfiguredPitchWhenLaneWidthIsConsistent() {
+        // The lane width matches the geometry the configured pitch predicts, so the window confirms
+        // the mounting angle and the persisted value is the configured one.
+        CameraCalibration wizard = wizardAt(8.0);
+        LaneDepartureDetector.Observation lane = laneAt(8.0, wizard);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+
+        AutoCalibrationLearner.StepResult first = learner.update(lane, 60.0, wizard, 8.0, 1280, 720);
+        assertEquals(CalibrationStore.Status.CALIBRATING, first.status());
+        assertEquals("implied pitch must reproduce the mounted angle",
+                8.0, learner.lastSolvedPitchDegrees(), 0.2);
+        assertEquals("implied lane width must match the prior",
+                LaneGeometry.DEFAULT_LANE_WIDTH_METERS, learner.lastLaneWidthMeters(), 0.05);
+
+        CameraCalibration current = wizard;
+        AutoCalibrationLearner.StepResult step = null;
+        for (int i = 0; i < AutoCalibrationLearner.REQUIRED_CONVERGENCE_SAMPLES; i++) {
+            step = learner.update(lane, 60.0, current, current.pitchDegrees(), 1280, 720);
+            if (step.calibrationUpdated()) {
+                current = step.calibration();
+            }
+        }
+
+        assertNotNull(step);
+        assertEquals(CalibrationStore.Status.CALIBRATED, step.status());
+        assertEquals(100, step.progressPercent());
+        assertEquals("the confirmed value is the configured angle", 8.0, current.pitchDegrees(), 0.01);
+    }
+
+    @Test
+    public void drivingGatePausesInsteadOfRestartingWhenLaneSamplesExist() {
+        CameraCalibration wizard = wizardAt(8.0);
+        LaneDepartureDetector.Observation lane = laneAt(8.0, wizard);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+
+        for (int i = 0; i < 20; i++) {
+            learner.update(lane, 60.0, wizard, 8.0, 1280, 720);
+        }
+        int progressBefore = learner.progress();
+        assertTrue(progressBefore > 0);
+
+        // Dropping below the speed gate must hold the window, not discard it: the consumer-grade
+        // installer shows a progress bar that survives normal traffic.
+        learner.update(lane, 10.0, wizard, 8.0, 1280, 720);
+        assertEquals(AutoCalibrationLearner.Rejection.DRIVING_CONDITION, learner.lastRejection());
+        assertEquals("the gate failure must hold the window", progressBefore, learner.progress());
+        int resumed = learner.update(lane, 60.0, wizard, 8.0, 1280, 720).progressPercent();
+        assertTrue("the window must resume where it stopped, not restart or double-count",
+                resumed > progressBefore && resumed <= progressBefore + 2);
+    }
+
+    @Test
+    public void rejectsBoundaryPairThatIsNotOneEgoLane() {
+        CameraCalibration wizard = wizardAt(8.0);
+        // Both tracked edges are twice as far apart as a lane: the pair is a neighbouring lane line,
+        // so the observation says nothing about this vehicle's mounting angle.
+        LaneDepartureDetector.Observation neighbour = laneWithWidthFactor(8.0, wizard, 2.0);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+
+        AutoCalibrationLearner.StepResult step = learner.update(neighbour, 60.0, wizard, 8.0,
+                1280, 720);
+        assertEquals(AutoCalibrationLearner.Rejection.OBSERVATION_INCOHERENT,
+                learner.lastRejection());
+        assertEquals(CalibrationStore.Status.WIZARD_COMPLETED, step.status());
+        assertEquals(0, learner.progress());
+    }
+
+    @Test
+    public void rejectsObservationWhoseWidthRatioContradictsTheModel() {
+        CameraCalibration wizard = wizardAt(8.0);
+        // A width ratio of 3 cannot be produced by a flat road at this mounting angle: the ratio is
+        // fixed by the two rows and the pitch together.
+        LaneDepartureDetector.Observation lane = flatObservation(3.0);
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+
+        AutoCalibrationLearner.StepResult step = learner.update(lane, 60.0, wizard, 8.0, 1280, 720);
+        // The ratios cannot be reconciled by any pitch inside the bracket, so the frame is dropped.
+        assertEquals(AutoCalibrationLearner.Rejection.OBSERVATION_INCOHERENT,
+                learner.lastRejection());
+        assertEquals(CalibrationStore.Status.WIZARD_COMPLETED, step.status());
+        assertEquals(0, learner.progress());
+    }
+
+    @Test
+    public void reportsImpliedPitchDeviationForReaiming() {
+        CameraCalibration wizard = wizardAt(8.0);
+
+        // A lane whose ratio no pitch inside the bracket can explain: the frame is dropped and the
+        // implied angle is deliberately not published.
+        AutoCalibrationLearner incoherent = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        incoherent.update(laneAt(20.0, wizard), 60.0, wizard, 8.0, 1280, 720);
+        assertEquals(AutoCalibrationLearner.Rejection.OBSERVATION_INCOHERENT,
+                incoherent.lastRejection());
+        assertEquals("a mounting error is not a camera-geometry failure",
+                0, incoherent.consecutiveGeometricRejections());
+
+        // Inside the bracket the deviation is reported instead, so the UI can advise re-aiming: the
+        // camera looks 4 degrees steeper than the wizard was told.
+        AutoCalibrationLearner insideBracket = new AutoCalibrationLearner(
+                CalibrationStore.Status.WIZARD_COMPLETED, 0);
+        AutoCalibrationLearner.StepResult step = insideBracket.update(laneAt(12.0, wizard), 60.0,
+                wizard, 8.0, 1280, 720);
+        assertEquals(AutoCalibrationLearner.Rejection.NONE, insideBracket.lastRejection());
+        assertEquals(CalibrationStore.Status.CALIBRATING, step.status());
+        assertEquals(12.0, insideBracket.lastSolvedPitchDegrees(), 0.3);
+        assertTrue("the deviation must be large enough to explain to the installer",
+                Math.abs(insideBracket.lastSolvedPitchDegrees() - wizard.pitchDegrees()) > 3.5);
+    }
+
+    /** Synthetic lane whose edges imply the given true pitch, on the real ROI rows. */
+    private static LaneDepartureDetector.Observation laneAt(double truePitchDegrees,
+                                                            CameraCalibration wizard) {
+        return laneWithWidthFactor(truePitchDegrees, wizard, 1.0);
+    }
+
+    /**
+     * As {@link #laneAt}, with both edges scaled away from the lane width prior and the sample
+     * geometry kept inside the image so the detector's own plausibility rules still apply.
+     */
+    private static LaneDepartureDetector.Observation laneWithWidthFactor(double truePitchDegrees,
+                                                                         CameraCalibration wizard,
+                                                                         double widthFactor) {
+        int frameWidth = 1280;
+        int frameHeight = 720;
+        java.util.List<LaneGeometry.WidthSample> samples = new java.util.ArrayList<>();
+        // On a road descending away from the camera the larger row is the nearer one.
+        double nearRow = LaneDepartureDetector.ROI_BOTTOM_ROW;
+        double farRow = LaneDepartureDetector.ROI_TOP_ROW;
+        double nearWidth = 0.0;
+        for (int i = 0; i <= 8; i++) {
+            double rowY = farRow + (nearRow - farRow) * i / 8.0;
+            double width = widthFactor * LaneGeometry.laneWidthModelMeters(wizard, rowY,
+                    truePitchDegrees, LaneGeometry.DEFAULT_LANE_WIDTH_METERS, frameWidth,
+                    frameHeight);
+            if (!Double.isFinite(width)) {
+                continue;
+            }
+            width = Math.min(width, 0.8);
+            if (i == 8) {
+                nearWidth = width;
+            }
+            samples.add(new LaneGeometry.WidthSample(rowY, 0.5 - width / 2.0,
+                    0.5 + width / 2.0, 0.9));
+        }
+        return new LaneDepartureDetector.Observation(0.0, 0.9, true,
+                0.5 - nearWidth / 2.0, 0.5 + nearWidth / 2.0,
+                0.5 - nearWidth / 2.0, 0.5 + nearWidth / 2.0, samples);
+    }
+
+    /** Observation with a fixed near/far width ratio and no physical model behind it. */
+    private static LaneDepartureDetector.Observation flatObservation(double ratio) {
+        double farWidth = 0.10;
+        double nearWidth = farWidth * ratio;
+        java.util.List<LaneGeometry.WidthSample> samples = java.util.List.of(
+                new LaneGeometry.WidthSample(LaneDepartureDetector.ROI_TOP_ROW,
+                        0.5 - farWidth / 2.0, 0.5 + farWidth / 2.0, 0.9),
+                new LaneGeometry.WidthSample(LaneDepartureDetector.ROI_BOTTOM_ROW,
+                        0.5 - nearWidth / 2.0, 0.5 + nearWidth / 2.0, 0.9));
+        return new LaneDepartureDetector.Observation(0.0, 0.9, true,
+                0.5 - farWidth / 2.0, 0.5 + farWidth / 2.0,
+                0.5 - nearWidth / 2.0, 0.5 + nearWidth / 2.0, samples);
     }
 
     @Test
@@ -355,6 +588,17 @@ public final class AutoCalibrationLearnerTest {
     /** Straight-road observation whose vanishing point lands at y_vp = 0.48 (~1.3 deg), well inside the window. */
     private static LaneDepartureDetector.Observation straightLane() {
         return new LaneDepartureDetector.Observation(0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+    }
+
+    /**
+     * Vanishing row the legacy two-row extrapolation reports for a lane whose reported top and bottom
+     * widths differ by the given amounts. Mirrors the perspective relation rather than hard-coding a
+     * number, so the assertion cannot drift away from the implementation silently.
+     */
+    private static double expectedVanishingY(double widthTop, double widthBottom) {
+        double deltaY = LaneDepartureDetector.Y_BOTTOM - LaneDepartureDetector.Y_TOP;
+        return LaneDepartureDetector.Y_BOTTOM
+                - deltaY * (widthBottom / (widthBottom - widthTop));
     }
 
     private static CameraCalibration wizardAt(double pitchDegrees) {

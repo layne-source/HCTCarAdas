@@ -117,9 +117,9 @@ public final class AdasSimulator {
         switch (scenario) {
             case FCW_APPROACH -> generateFcwApproach(frames, width, height, calibration);
             case HMW_PROXIMITY -> generateHmwProximity(frames, width, height, calibration);
-            case LDW_DEPARTURE -> generateLdwDeparture(frames, width, height);
+            case LDW_DEPARTURE -> generateLdwDeparture(frames, width, height, calibration);
             case LVSA_START -> generateLvsaStart(frames, width, height, calibration);
-            case AUTO_CALIBRATION -> generateAutoCalibration(frames, width, height);
+            case AUTO_CALIBRATION -> generateAutoCalibration(frames, width, height, calibration);
             default -> { }
         }
         return frames;
@@ -132,12 +132,61 @@ public final class AdasSimulator {
                 + calibration.focalLengthYNormalized() * Math.tan(rayAngle));
     }
 
+    /**
+     * Lane observation with the width samples the calibration solver consumes, synthesised from the
+     * same projection model so the simulation exercises the real pitch-solve path instead of the
+     * legacy vanishing-point fallback.
+     *
+     * @param lateralOffset normalized lane-centre offset; positive means the vehicle sits left
+     */
+    private static LaneDepartureDetector.Observation syntheticLane(CameraCalibration calibration,
+                                                                   int width, int height,
+                                                                   double lateralOffset,
+                                                                   double confidence) {
+        return syntheticLane(calibration, width, height, lateralOffset, confidence,
+                calibration.pitchDegrees());
+    }
+
+    private static LaneDepartureDetector.Observation syntheticLane(CameraCalibration calibration,
+                                                                   int width, int height,
+                                                                   double lateralOffset,
+                                                                   double confidence,
+                                                                   double truePitchDegrees) {
+        double farRow = LaneDepartureDetector.ROI_TOP_ROW;
+        double nearRow = LaneDepartureDetector.ROI_BOTTOM_ROW;
+        List<LaneGeometry.WidthSample> samples = new ArrayList<>();
+        double nearWidth = Double.NaN;
+        for (int i = 0; i <= 8; i++) {
+            double rowY = farRow + (nearRow - farRow) * i / 8.0;
+            double laneWidth = LaneGeometry.laneWidthModelMeters(calibration, rowY, truePitchDegrees,
+                    LaneGeometry.DEFAULT_LANE_WIDTH_METERS, width, height);
+            if (!Double.isFinite(laneWidth)) {
+                continue;
+            }
+            // Keep the synthetic pair inside the frame at steep pitches.
+            laneWidth = Math.min(laneWidth, 0.8);
+            if (i == 8) {
+                nearWidth = laneWidth;
+            }
+            double centerX = 0.5 + lateralOffset;
+            samples.add(new LaneGeometry.WidthSample(rowY, centerX - laneWidth / 2.0,
+                    centerX + laneWidth / 2.0, confidence));
+        }
+        if (!Double.isFinite(nearWidth)) {
+            nearWidth = 0.40;
+        }
+        double center = 0.5 + lateralOffset;
+        return new LaneDepartureDetector.Observation(lateralOffset, confidence, true,
+                center - nearWidth * 0.45, center + nearWidth * 0.45,
+                center - nearWidth / 2.0, center + nearWidth / 2.0, samples);
+    }
+
     private static void generateFcwApproach(List<SimFrame> frames, int width, int height,
                                              CameraCalibration calibration) {
         int total = 25; // 5 seconds
         double speedKmh = 60.0;
-        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
-                0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+                0.0, 0.85);
 
         for (int i = 0; i < total; i++) {
             long timeNanos = i * 200_000_000L;
@@ -173,8 +222,8 @@ public final class AdasSimulator {
                                               CameraCalibration calibration) {
         int total = 25; // 5 seconds
         double speedKmh = 25.0; // Low city speed
-        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
-                0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+                0.0, 0.85);
 
         for (int i = 0; i < total; i++) {
             long timeNanos = i * 200_000_000L;
@@ -206,7 +255,8 @@ public final class AdasSimulator {
         }
     }
 
-    private static void generateLdwDeparture(List<SimFrame> frames, int width, int height) {
+    private static void generateLdwDeparture(List<SimFrame> frames, int width, int height,
+                                             CameraCalibration calibration) {
         int total = 25; // 5 seconds
         double speedKmh = 65.0;
 
@@ -223,8 +273,8 @@ public final class AdasSimulator {
                 desc = String.format("自车向左偏离压线! 偏离量 %.2f (LDW 偏离报警中)", offset);
             }
 
-            LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
-                    offset, 0.88, true, 0.38 + offset, 0.62 + offset, 0.20 + offset, 0.80 + offset);
+            LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+                    offset, 0.88);
             VehicleDetector.Result detections = new VehicleDetector.Result(
                     timeNanos, width, height, 38_000_000L, List.of());
 
@@ -237,8 +287,8 @@ public final class AdasSimulator {
         int total = 35; // 7 seconds, including tracker confirmation before the stationary wait.
         int waitFrames = 20;
         double speedKmh = 0.0; // Stationary at traffic light
-        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
-                0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+                0.0, 0.85);
 
         for (int i = 0; i < total; i++) {
             long timeNanos = i * 200_000_000L;
@@ -273,15 +323,20 @@ public final class AdasSimulator {
         }
     }
 
-    private static void generateAutoCalibration(List<SimFrame> frames, int width, int height) {
+    private static void generateAutoCalibration(List<SimFrame> frames, int width, int height,
+                                                CameraCalibration calibration) {
         int total = 65; // 13 seconds, enough for 60-sample convergence
         double speedKmh = 60.0;
-        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
-                0.0, 0.85, true, 0.38, 0.62, 0.20, 0.80);
+        // The fixture pitch is deliberately not the mounted one: the samples describe a camera
+        // looking 1.5 degrees steeper, so the simulation proves the pitch solve actually corrects
+        // the configured value instead of echoing it back.
+        double mountedPitch = calibration.pitchDegrees() + 1.5;
+        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+                0.0, 0.85, mountedPitch);
 
         for (int i = 0; i < total; i++) {
             long timeNanos = i * 200_000_000L;
-            String desc = String.format("60 km/h 直行平稳行驶 · 自学习灭点收敛中 (%d/%d)",
+            String desc = String.format("60 km/h 直行平稳行驶 · 车道宽度比值验证中 (%d/%d)",
                     Math.min(60, i + 1), 60);
 
             VehicleDetector.Result detections = new VehicleDetector.Result(
