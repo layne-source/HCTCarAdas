@@ -1160,6 +1160,16 @@ public final class MainActivity extends Activity {
         alertsHoldUntilNanos = 0L;
     }
 
+    /**
+     * Analysis only runs while this activity is started: the camera, the worker and the speed feed
+     * are all released here and rebuilt in {@link #onStart()}.
+     *
+     * <p>This prototype therefore depends on the head unit keeping it in the foreground. No wake
+     * lock and no foreground service are held, so a device that lets the display sleep would throttle
+     * the CPU while frames still trickle in - the pipeline would keep reporting "fresh" results at a
+     * collapsing rate instead of raising any alarm. The target head unit never sleeps, which makes
+     * that path unreachable here; re-check the assumption before running on any other host.
+     */
     @Override
     protected void onStop() {
         synchronized (this) {
