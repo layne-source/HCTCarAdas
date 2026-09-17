@@ -58,6 +58,15 @@ public final class CalibrationStore {
         return load();
     }
 
+    /**
+     * Camera id recorded together with the stored calibration, or an empty string when the
+     * calibration predates camera binding or no calibration is stored at all.
+     */
+    public String storedCameraId() {
+        String storedId = preferences.getString(KEY_CAMERA_ID, null);
+        return storedId == null ? "" : storedId;
+    }
+
     public Status loadStatus(String expectedCameraId) {
         CameraCalibration calibration = load(expectedCameraId);
         if (calibration == null) {
