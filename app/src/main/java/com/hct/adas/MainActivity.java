@@ -37,6 +37,20 @@ public final class MainActivity extends Activity {
     private static final String TAG = "HctAdasCore";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
+    /** Fallback installation pitch when the bracket angle is unknown; self-learning refines it. */
+    private static final double INITIAL_PITCH_DEGREES = 4.0;
+    /**
+     * Bounds accepted by the wizard. They mirror the learner's pitch acceptance range: a value
+     * outside it could never be reached by self-learning either, so accepting it would only store
+     * a calibration the pipeline refuses to use.
+     */
+    private static final double MIN_INITIAL_PITCH_DEGREES = -5.0;
+    private static final double MAX_INITIAL_PITCH_DEGREES = 20.0;
+    /**
+     * Pitch at which the default-intrinsics vanishing point window (12.7 deg) is approached, so the
+     * wizard warns that the mounting angle may be too steep for self-learning to converge.
+     */
+    private static final double STEEP_PITCH_WARNING_DEGREES = 12.0;
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private UsbCameraSource cameraSource;
@@ -932,8 +946,27 @@ public final class MainActivity extends Activity {
         }
         form.addView(fovGroup);
 
+        TextView pitchLabel = new TextView(this);
+        pitchLabel.setText("\n3. 初始俯仰角 (度，向下为正):");
+        pitchLabel.setTextSize(14f);
+        pitchLabel.setTextColor(0xFFFFFFFF);
+        form.addView(pitchLabel);
+
+        EditText pitchField = numberField("默认 4.0（支架未定角度时先用默认值）");
+        double pitchToShow = calibration != null && calibration.isUsableFor(width, height)
+                ? calibration.pitchDegrees() : INITIAL_PITCH_DEGREES;
+        pitchField.setText(Double.toString(pitchToShow));
+        form.addView(pitchField);
+
+        TextView pitchNote = new TextView(this);
+        pitchNote.setText("• 已知安装角度时直接填，可省去自学习等待\n"
+                + "• 未知则保持默认：上路正常行驶后自动收敛，无需精确测量");
+        pitchNote.setTextSize(12f);
+        pitchNote.setTextColor(0xFFB0BEC5);
+        form.addView(pitchNote);
+
         TextView guideNote = new TextView(this);
-        guideNote.setText("\n3. 物理对准提示:\n• 调整镜头使车头机盖露出在屏幕下方参考线处\n• 确保道路远方处于中间黄色地平线附近\n• 拧紧支架螺丝保存后，上路正常行驶自动收敛俯仰角");
+        guideNote.setText("\n4. 物理对准提示:\n• 调整镜头使车头机盖露出在屏幕下方参考线处\n• 确保道路远方处于中间黄色地平线附近\n• 拧紧支架螺丝保存后，上路正常行驶自动收敛俯仰角");
         guideNote.setTextSize(12f);
         guideNote.setTextColor(0xFFB0BEC5);
         form.addView(guideNote);
@@ -959,13 +992,16 @@ public final class MainActivity extends Activity {
                         }
 
                         double hfov = rb120.isChecked() ? 120.0 : (rb100.isChecked() ? 100.0 : 90.0);
-                        double initialPitch = 4.0;
+                        double initialPitch = parsePitchDegrees(pitchField);
 
                         CameraCalibration next = CameraCalibration.fromWizard(
                                 width, height, heightMeters, hfov, initialPitch);
 
                         applyCameraCalibration(next);
-                        Toast.makeText(this, "向导配置已保存！请上路以 >35km/h 正常行驶以完成自标定", Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, initialPitch >= STEEP_PITCH_WARNING_DEGREES
+                                ? "向导配置已保存！当前俯仰角较大，若标定栏未开始收敛请按提示调整支架角度"
+                                : "向导配置已保存！请上路以 >35km/h 正常行驶以完成自标定",
+                                Toast.LENGTH_LONG).show();
                     } catch (RuntimeException failure) {
                         Toast.makeText(this, "参数错误: " + failure.getMessage(), Toast.LENGTH_LONG).show();
                     }
@@ -1011,6 +1047,24 @@ public final class MainActivity extends Activity {
             throw new IllegalArgumentException("参数不能为空");
         }
         return Double.parseDouble(value);
+    }
+
+    /**
+     * Validates the wizard's pitch input. The accepted range mirrors the learner's pitch bounds;
+     * a value outside them could never be reached by self-learning either, so storing it would only
+     * produce a calibration the pipeline refuses to use. Whether the resulting pitch actually keeps
+     * the lane ROI on the road is judged afterwards by the learner's ROI guard, which surfaces the
+     * "安装角度超出可学习范围" hint once it rejects repeatedly.
+     */
+    private double parsePitchDegrees(EditText field) {
+        double value = parse(field);
+        if (!Double.isFinite(value) || value < MIN_INITIAL_PITCH_DEGREES
+                || value > MAX_INITIAL_PITCH_DEGREES) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT,
+                    "初始俯仰角须在 %.0f ~ %.0f 度之间", MIN_INITIAL_PITCH_DEGREES,
+                    MAX_INITIAL_PITCH_DEGREES));
+        }
+        return value;
     }
 
     private void fitPreview(VehicleDetector.Result result) {
