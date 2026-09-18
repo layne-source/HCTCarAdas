@@ -231,6 +231,24 @@ public final class LeadVehicleTrackerTest {
         assertSame(inLane, confirmed.detection());
     }
 
+    @Test
+    public void laneRecoveryCanReplaceAnAlreadyTrackedAdjacentVehicle() {
+        LeadVehicleTracker tracker = new LeadVehicleTracker();
+        VehicleDetector.Detection adjacent = box(0.70f, 0.68f, 0.82f, 0.92f);
+        VehicleDetector.Detection inLane = box(0.42f, 0.50f, 0.58f, 0.74f);
+        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
+                0.0, 0.9, true, 0.44, 0.56, 0.35, 0.65);
+
+        long oldId = confirm(tracker, 0, adjacent).trackId();
+        assertEquals(oldId, tracker.update(frame(600, adjacent, inLane), lane).trackId());
+        assertEquals(oldId, tracker.update(frame(800, adjacent, inLane), lane).trackId());
+
+        LeadVehicleTracker.Snapshot switched = tracker.update(frame(1000, adjacent, inLane), lane);
+        assertEquals(LeadVehicleTracker.State.TRACKING, switched.state());
+        assertSame(inLane, switched.detection());
+        assertNotEquals(oldId, switched.trackId());
+    }
+
     private static LeadVehicleTracker.Snapshot confirm(LeadVehicleTracker tracker,
                                                      long startMillis,
                                                      VehicleDetector.Detection detection) {

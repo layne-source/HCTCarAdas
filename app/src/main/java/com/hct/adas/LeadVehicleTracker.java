@@ -145,9 +145,11 @@ public final class LeadVehicleTracker {
             if (!eligible(detection)) {
                 continue;
             }
+            boolean laneRecovery = current != null && detection != current
+                    && shouldRecoverToLane(current, detection, lane);
             if (current != null && (detection == current
-                    || detection.bottom() < current.bottom() + SWITCH_BOTTOM_MARGIN
-                    || iou(current, detection) >= 0.50f)) {
+                    || (!laneRecovery && (detection.bottom() < current.bottom() + SWITCH_BOTTOM_MARGIN
+                    || iou(current, detection) >= 0.50f)))) {
                 continue;
             }
             // A lower ground-contact point is only a proximity heuristic, not metric distance.
@@ -160,6 +162,20 @@ public final class LeadVehicleTracker {
             }
         }
         return best;
+    }
+
+    /**
+     * Once a target is clearly outside the measured ego lane, allow an in-lane candidate to enter
+     * the normal confirmation hysteresis even when it is currently farther away. Without this
+     * exception the bottom-edge proximity gate permanently locks onto an adjacent near vehicle
+     * after lane geometry becomes available.
+     */
+    private static boolean shouldRecoverToLane(VehicleDetector.Detection current,
+                                               VehicleDetector.Detection candidate,
+                                               LaneDepartureDetector.Observation lane) {
+        return lane != null && lane.available()
+                && laneMembershipScore(current, lane) < 0.0f
+                && laneMembershipScore(candidate, lane) >= 0.20f;
     }
 
     /** Returns a bounded bonus/penalty so proximity remains useful inside the same lane. */
