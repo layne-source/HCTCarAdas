@@ -215,6 +215,22 @@ public final class LeadVehicleTrackerTest {
         assertNull(outside.detection());
     }
 
+    @Test
+    public void laneGeometryKeepsNearerAdjacentVehicleFromBecomingLead() {
+        LeadVehicleTracker tracker = new LeadVehicleTracker();
+        VehicleDetector.Detection inLane = box(0.42f, 0.50f, 0.58f, 0.74f);
+        VehicleDetector.Detection adjacent = box(0.70f, 0.68f, 0.82f, 0.92f);
+        LaneDepartureDetector.Observation lane = new LaneDepartureDetector.Observation(
+                0.0, 0.9, true, 0.44, 0.56, 0.35, 0.65);
+
+        assertSame(inLane, tracker.update(frame(0, adjacent, inLane), lane).detection());
+        tracker.update(frame(200, adjacent, inLane), lane);
+        LeadVehicleTracker.Snapshot confirmed = tracker.update(frame(400, adjacent, inLane), lane);
+
+        assertEquals(LeadVehicleTracker.State.TRACKING, confirmed.state());
+        assertSame(inLane, confirmed.detection());
+    }
+
     private static LeadVehicleTracker.Snapshot confirm(LeadVehicleTracker tracker,
                                                      long startMillis,
                                                      VehicleDetector.Detection detection) {

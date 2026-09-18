@@ -88,13 +88,34 @@ public final class LaneDepartureDetectorTest {
         byte[] next = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
         dimLeftLane(next);
         for (int y = (int) (HEIGHT * 0.50); y <= (int) (HEIGHT * 0.85); y++) {
-            drawStripe(next, WIDTH, HEIGHT, (int) (WIDTH * 0.10), y, 6, 240);
+            // The distractor is deliberately inside the previous left-boundary ±0.07 window.
+            drawStripe(next, WIDTH, HEIGHT, (int) (WIDTH * 0.36), y, 6, 240);
         }
 
         LaneDepartureDetector.Observation tracked = detector.detect(next, WIDTH, HEIGHT);
         assertTrue(tracked.available());
         assertTrue("same-side distractor must not replace the tracked left boundary",
                 tracked.leftTopX() > 0.30);
+    }
+
+    @Test
+    public void singleFrameMissRetainsHistoryForTheFollowingSearch() {
+        LaneDepartureDetector detector = new LaneDepartureDetector();
+        assertTrue(detector.detect(createSyntheticRoad(WIDTH, HEIGHT, 0.0), WIDTH, HEIGHT)
+                .available());
+        byte[] blank = new byte[WIDTH * HEIGHT * 3 / 2];
+        Arrays.fill(blank, 0, WIDTH * HEIGHT, (byte) 70);
+        Arrays.fill(blank, WIDTH * HEIGHT, blank.length, (byte) 128);
+        assertFalse(detector.detect(blank, WIDTH, HEIGHT).available());
+
+        byte[] next = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        dimLeftLane(next);
+        for (int y = (int) (HEIGHT * 0.50); y <= (int) (HEIGHT * 0.85); y++) {
+            drawStripe(next, WIDTH, HEIGHT, (int) (WIDTH * 0.36), y, 6, 240);
+        }
+        LaneDepartureDetector.Observation recovered = detector.detect(next, WIDTH, HEIGHT);
+        assertTrue(recovered.available());
+        assertTrue(recovered.leftTopX() > 0.30);
     }
 
     @Test

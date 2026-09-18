@@ -4,7 +4,8 @@ import java.util.List;
 
 /**
  * Single forward-candidate tracker, owned by the frame consumer thread.
- * Geometry associates detections; it does not establish lane membership or physical identity.
+ * Geometry associates detections and provides a soft in-lane priority; it does not claim physical
+ * target identity.
  */
 public final class LeadVehicleTracker {
     public enum State { NONE, CANDIDATE, TRACKING, LOST }
@@ -37,6 +38,15 @@ public final class LeadVehicleTracker {
     private Snapshot latest;
 
     public Snapshot update(VehicleDetector.Result frame) {
+        return update(frame, null);
+    }
+
+    /**
+     * Updates the tracker with the current lane geometry when it is available. Lane membership is
+     * deliberately a soft score: a briefly invalid lane observation must not make an already
+     * tracked vehicle disappear, and the legacy trapezoid remains the fallback before calibration.
+     */
+    public Snapshot update(VehicleDetector.Result frame, LaneDepartureDetector.Observation lane) {
         long now = frame.timestampNanos();
         if (latest != null && now <= latest.timestampNanos()) {
             return latest;
@@ -65,7 +75,7 @@ public final class LeadVehicleTracker {
             }
         }
 
-        VehicleDetector.Detection candidate = selectCandidate(frame.vehicles(), current);
+        VehicleDetector.Detection candidate = selectCandidate(frame.vehicles(), current, lane);
         if (confirmCandidate(candidate, now)) {
             target = candidate;
             targetId = nextId++;
@@ -127,7 +137,8 @@ public final class LeadVehicleTracker {
     }
 
     private static VehicleDetector.Detection selectCandidate(
-            List<VehicleDetector.Detection> detections, VehicleDetector.Detection current) {
+            List<VehicleDetector.Detection> detections, VehicleDetector.Detection current,
+            LaneDepartureDetector.Observation lane) {
         VehicleDetector.Detection best = null;
         float bestScore = -Float.MAX_VALUE;
         for (VehicleDetector.Detection detection : detections) {
@@ -141,6 +152,7 @@ public final class LeadVehicleTracker {
             }
             // A lower ground-contact point is only a proximity heuristic, not metric distance.
             float score = detection.bottom() - 0.30f * Math.abs(centerX(detection) - 0.5f);
+            score += laneMembershipScore(detection, lane);
             if (score > bestScore || (score == bestScore && best != null
                     && detection.left() < best.left())) {
                 best = detection;
@@ -148,6 +160,64 @@ public final class LeadVehicleTracker {
             }
         }
         return best;
+    }
+
+    /** Returns a bounded bonus/penalty so proximity remains useful inside the same lane. */
+    private static float laneMembershipScore(VehicleDetector.Detection detection,
+                                             LaneDepartureDetector.Observation lane) {
+        if (lane == null || !lane.available()) {
+            return 0f;
+        }
+        float y = detection.bottom();
+        float left = (float) interpolateBoundary(lane, y, true);
+        float right = (float) interpolateBoundary(lane, y, false);
+        if (!Float.isFinite(left) || !Float.isFinite(right) || right <= left) {
+            return 0f;
+        }
+        float halfWidth = Math.max(0.06f, (right - left) * 0.5f);
+        float lateral = Math.abs(centerX(detection) - (left + right) * 0.5f) / halfWidth;
+        if (lateral <= 1f) {
+            return 0.55f * (1f - lateral);
+        }
+        if (lateral <= 2f) {
+            return -0.20f * (lateral - 1f);
+        }
+        return -0.35f;
+    }
+
+    private static double interpolateBoundary(LaneDepartureDetector.Observation lane, double rowY,
+                                              boolean leftSide) {
+        List<LaneGeometry.WidthSample> samples = lane.widthSamples();
+        if (!samples.isEmpty()) {
+            LaneGeometry.WidthSample before = null;
+            LaneGeometry.WidthSample after = null;
+            for (LaneGeometry.WidthSample sample : samples) {
+                if (sample.rowY() <= rowY) {
+                    before = sample;
+                }
+                if (sample.rowY() >= rowY) {
+                    after = sample;
+                    break;
+                }
+            }
+            if (before != null && after != null) {
+                if (Math.abs(after.rowY() - before.rowY()) < 1.0e-9) {
+                    return leftSide ? before.leftX() : before.rightX();
+                }
+                double t = (rowY - before.rowY()) / (after.rowY() - before.rowY());
+                double start = leftSide ? before.leftX() : before.rightX();
+                double end = leftSide ? after.leftX() : after.rightX();
+                return start + t * (end - start);
+            }
+        }
+        double top = leftSide ? lane.leftTopX() : lane.rightTopX();
+        double bottom = leftSide ? lane.leftBottomX() : lane.rightBottomX();
+        double span = LaneDepartureDetector.Y_BOTTOM - LaneDepartureDetector.Y_TOP;
+        if (!Double.isFinite(top) || !Double.isFinite(bottom) || span <= 0.0) {
+            return Double.NaN;
+        }
+        double t = (rowY - LaneDepartureDetector.Y_TOP) / span;
+        return top + t * (bottom - top);
     }
 
     private boolean confirmCandidate(VehicleDetector.Detection candidate, long now) {

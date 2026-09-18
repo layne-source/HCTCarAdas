@@ -858,7 +858,7 @@ public final class MainActivity extends Activity {
             return;
         }
         previousProcessedTimestampNanos = result.timestampNanos();
-        LeadVehicleTracker.Snapshot tracking = tracker.update(result);
+        LeadVehicleTracker.Snapshot tracking = tracker.update(result, lane);
         CameraCalibration activeCalib = calibrationStatus == CalibrationStore.Status.CALIBRATED
                 ? calibration : null;
         boolean persistCalibration = !simulationFrame;
