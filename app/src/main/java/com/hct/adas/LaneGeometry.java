@@ -69,6 +69,17 @@ public final class LaneGeometry {
             return Double.isFinite(curvatureRadiusMeters);
         }
 
+        /** True when the fit classified the lane as curved or confirmed it is straight. */
+        public boolean curvatureKnown() {
+            return !Double.isNaN(curvatureRadiusMeters);
+        }
+
+        /** Offset as a fraction of the measured lane width, or NaN without metric geometry. */
+        public double centerOffsetLaneFraction() {
+            return Double.isFinite(centerOffsetMeters) && Double.isFinite(laneWidthMeters)
+                    && laneWidthMeters > 0.0 ? centerOffsetMeters / laneWidthMeters : Double.NaN;
+        }
+
         /** Image-space lane centre; vehicle offset has the opposite sign by definition. */
         public double laneCenterImageX() {
             return valid() ? 0.5 - centerOffsetNormalized : Double.NaN;
@@ -357,8 +368,8 @@ public final class LaneGeometry {
      * Fits {@code X = a·Z² + b·Z + c} to the lane centre line and returns the radius at
      * {@link #CURVATURE_EVALUATION_METERS}.
      *
-     * <p>Returns NaN for a straight lane (|a| below {@link #MIN_ABS_CURVATURE}) rather than a huge
-     * radius, so the UI can distinguish "straight" from "unavailable" without a magic cutoff here.
+     * <p>Returns positive infinity for a confirmed straight lane (|a| below
+     * {@link #MIN_ABS_CURVATURE}); NaN means the fit was unavailable or failed.
      */
     public static double curvatureRadiusMeters(CameraCalibration calibration, double pitchDegrees,
                                                java.util.List<WidthSample> samples,
@@ -415,8 +426,11 @@ public final class LaneGeometry {
         }
         double a = fit[0];
         double b = fit[1];
-        if (!Double.isFinite(a) || !Double.isFinite(b) || Math.abs(a) < MIN_ABS_CURVATURE) {
+        if (!Double.isFinite(a) || !Double.isFinite(b)) {
             return Double.NaN;
+        }
+        if (Math.abs(a) < MIN_ABS_CURVATURE) {
+            return Double.POSITIVE_INFINITY;
         }
         double z = CURVATURE_EVALUATION_METERS;
         double slope = 2.0 * a * z + b;

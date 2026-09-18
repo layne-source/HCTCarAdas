@@ -310,12 +310,12 @@ public final class LaneDepartureDetector {
             }
             double minX = wideSearch ? sideMin : Math.max(sideMin, reference - SEARCH_HALF_WIDTH);
             double maxX = wideSearch ? sideMax : Math.min(sideMax, reference + SEARCH_HALF_WIDTH);
-            wideSearch = false;
             RidgeCandidate candidate = findRidge(context, y, context.rowBrightness[i],
                     minX, maxX);
             if (!candidate.found()) {
                 continue;
             }
+            wideSearch = false;
             double x = candidate.x() / (double) context.width;
             track.add(x, rowY, candidate.ridge());
             reference = x;

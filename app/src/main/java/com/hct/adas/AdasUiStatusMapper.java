@@ -141,7 +141,10 @@ public final class AdasUiStatusMapper {
             return new LaneStatus(departure, COLOR_INACTIVE,
                     "To Be Determined …", COLOR_INACTIVE);
         }
-        boolean departed = Math.abs(lane.centerOffsetNormalized()) >= LANE_OFFSET_THRESHOLD;
+        double laneOffset = lane.centerOffsetLaneFraction();
+        boolean departed = Double.isFinite(laneOffset)
+                ? Math.abs(laneOffset) >= LANE_OFFSET_THRESHOLD
+                : Math.abs(lane.centerOffsetNormalized()) >= LANE_OFFSET_THRESHOLD;
         String departure;
         if (departed) {
             // The offset is signed in the vehicle frame, positive to the right of the lane centre, so
@@ -159,8 +162,11 @@ public final class AdasUiStatusMapper {
     }
 
     public static String keepingText(double curvatureRadiusMeters) {
-        if (!Double.isFinite(curvatureRadiusMeters)) {
+        if (Double.isNaN(curvatureRadiusMeters)) {
             return "To Be Determined …";
+        }
+        if (Double.isInfinite(curvatureRadiusMeters)) {
+            return "Keep Straight Ahead";
         }
         double magnitude = Math.abs(curvatureRadiusMeters);
         if (magnitude > CURVE_STRAIGHT_RADIUS_METERS) {
@@ -173,8 +179,11 @@ public final class AdasUiStatusMapper {
     }
 
     public static int keepingColor(double curvatureRadiusMeters) {
-        if (!Double.isFinite(curvatureRadiusMeters)) {
+        if (Double.isNaN(curvatureRadiusMeters)) {
             return COLOR_INACTIVE;
+        }
+        if (Double.isInfinite(curvatureRadiusMeters)) {
+            return COLOR_NORMAL;
         }
         double magnitude = Math.abs(curvatureRadiusMeters);
         if (magnitude > CURVE_STRAIGHT_RADIUS_METERS) {
@@ -207,7 +216,7 @@ public final class AdasUiStatusMapper {
         }
         builder.append(lane.curvatureValid()
                 ? String.format(Locale.ROOT, " · R %.0f m", Math.abs(lane.curvatureRadiusMeters()))
-                : " · R straight");
+                : lane.curvatureKnown() ? " · R straight" : " · R unknown");
         return builder.toString();
     }
 }

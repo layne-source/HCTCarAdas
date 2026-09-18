@@ -23,7 +23,8 @@ public final class LeadVehicleMotionEstimatorTest {
         assertTrue(initial.visible());
         assertEquals(1L, moving.trackId());
         assertTrue(moving.distanceMeters() < initial.distanceMeters());
-        assertTrue(moving.closingSpeedMps() > 0.0);
+        assertTrue("The first valid delta must establish closing speed promptly",
+                moving.closingSpeedMps() > 3.0);
     }
 
     @Test

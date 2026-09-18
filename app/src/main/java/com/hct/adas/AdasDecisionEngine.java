@@ -41,6 +41,7 @@ public final class AdasDecisionEngine {
         }
     }
 
+    /** centerOffset is the signed vehicle offset as a fraction of the measured lane width. */
     public record LaneObservation(double centerOffset, double confidence, boolean available) { }
 
     private static final double FCW_MIN_SPEED_KMH = 20.0;

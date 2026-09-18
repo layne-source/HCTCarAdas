@@ -297,8 +297,7 @@ public final class VehicleOverlayView extends View {
         float hoodY = getHoodY(top, height);
         float normNearY = (hoodY - top) / height;
         boolean live = lane != null && lane.available();
-        boolean fresh = freshLane();
-        if (!live && !fresh) {
+        if (!live && !heldLaneUsable()) {
             // No measurement and no recent memory: draw nothing rather than inventing a corridor.
             laneDrawStyle = "none";
             return;
@@ -465,7 +464,7 @@ public final class VehicleOverlayView extends View {
                 textX, Math.max(textPaint.getTextSize(), rowY - 4f), textPaint);
         String radius = laneSnapshot.curvatureValid()
                 ? String.format(Locale.ROOT, "R %.0f m", Math.abs(laneSnapshot.curvatureRadiusMeters()))
-                : "R straight";
+                : laneSnapshot.curvatureKnown() ? "R straight" : "R unknown";
         canvas.drawText("LDWS / " + radius, textX,
                 Math.max(textPaint.getTextSize() * 2f, rowY - 4f + textPaint.getTextSize()),
                 textPaint);

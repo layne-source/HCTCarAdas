@@ -112,8 +112,18 @@ public final class AdasUiStatusMapperTest {
     }
 
     @Test
+    public void departureThresholdUsesLaneWidthFractionNotImageWidth() {
+        LaneGeometry.LaneSnapshot wideImageOffset = new LaneGeometry.LaneSnapshot(
+                1L, 0.30, 0.35, 3.5, 900.0, 9);
+        assertEquals("Good Lane Keeping",
+                AdasUiStatusMapper.lane(wideImageOffset, true, false).departure());
+    }
+
+    @Test
     public void keepingAssistCoversAllSixStates() {
         assertEquals("To Be Determined …", AdasUiStatusMapper.keepingText(Double.NaN));
+        assertEquals("Keep Straight Ahead",
+                AdasUiStatusMapper.keepingText(Double.POSITIVE_INFINITY));
         assertEquals("Keep Straight Ahead", AdasUiStatusMapper.keepingText(900.0));
         assertEquals("Keep Straight Ahead", AdasUiStatusMapper.keepingText(-900.0));
         assertEquals("Gentle Left Curve Ahead", AdasUiStatusMapper.keepingText(-300.0));
@@ -155,6 +165,9 @@ public final class AdasUiStatusMapperTest {
                 1L, 0.1, Double.NaN, Double.NaN, Double.NaN, 8);
         assertEquals("", AdasUiStatusMapper.laneDetail(uncalibrated));
         assertFalse(AdasUiStatusMapper.laneDetail(uncalibrated).contains("NaN"));
+        assertEquals(" · Offset +0.70 m (lane 3.5 m) · R unknown",
+                AdasUiStatusMapper.laneDetail(new LaneGeometry.LaneSnapshot(
+                        1L, 0.1, 0.7, 3.5, Double.NaN, 8)));
         assertEquals(" · Offset +0.70 m (lane 3.5 m) · R 900 m",
                 AdasUiStatusMapper.laneDetail(
                         new LaneGeometry.LaneSnapshot(1L, 0.1, 0.7, 3.5, 900.0, 8)));

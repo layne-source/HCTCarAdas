@@ -14,6 +14,7 @@ public final class LeadVehicleMotionEstimator {
     private double filteredDistance;
     private double filteredSpeed;
     private boolean initialized;
+    private boolean velocityInitialized;
     private CameraCalibration previousCalibration;
     public Measurement update(LeadVehicleTracker.Snapshot snapshot,
                               CameraCalibration calibration, int width, int height) {
@@ -37,32 +38,39 @@ public final class LeadVehicleMotionEstimator {
             return new Measurement(snapshot.trackId(), Double.NaN, 0.0, area(box, width, height), false);
         }
         double closingSpeed = 0.0;
-        if (!initialized || !calibration.equals(previousCalibration)
+        if (!initialized || materiallyChanged(previousCalibration, calibration)
                 || previousId != snapshot.trackId()
                 || snapshot.timestampNanos() <= previousTimestamp
                 || snapshot.timestampNanos() - previousTimestamp > 2_000_000_000L) {
             filteredDistance = distance;
             filteredSpeed = 0.0;
+            velocityInitialized = false;
             previousRawDistance = distance;
             initialized = true;
-            previousCalibration = calibration;
         } else {
             double dt = (snapshot.timestampNanos() - previousTimestamp) / 1_000_000_000.0;
             double rawSpeed = (previousRawDistance - distance) / dt;
             previousRawDistance = distance;
             if (!Double.isFinite(rawSpeed)) {
                 rawSpeed = 0.0;
+            } else if (!velocityInitialized) {
+                filteredSpeed = Math.max(-50.0, Math.min(50.0, rawSpeed));
+                velocityInitialized = true;
+                rawSpeed = filteredSpeed;
             } else {
                 // Reject single-frame box jitter: clamp to realistic vehicle acceleration limit
                 double maxSpeedChange = MAX_RELATIVE_ACCEL_MPS2 * dt;
                 rawSpeed = Math.max(filteredSpeed - maxSpeedChange, Math.min(filteredSpeed + maxSpeedChange, rawSpeed));
             }
-            filteredSpeed += SPEED_ALPHA * (rawSpeed - filteredSpeed);
+            if (velocityInitialized) {
+                filteredSpeed += SPEED_ALPHA * (rawSpeed - filteredSpeed);
+            }
             filteredDistance += DISTANCE_ALPHA * (distance - filteredDistance);
             closingSpeed = Math.max(-50.0, Math.min(50.0, filteredSpeed));
         }
         previousId = snapshot.trackId();
         previousTimestamp = snapshot.timestampNanos();
+        previousCalibration = calibration;
         return new Measurement(snapshot.trackId(), filteredDistance, closingSpeed,
                 area(box, width, height), true);
     }
@@ -74,7 +82,21 @@ public final class LeadVehicleMotionEstimator {
         previousRawDistance = Double.NaN;
         filteredDistance = Double.NaN;
         filteredSpeed = 0.0;
+        velocityInitialized = false;
         previousCalibration = null;
+    }
+
+    private static boolean materiallyChanged(CameraCalibration previous, CameraCalibration current) {
+        if (previous == null) {
+            return false;
+        }
+        return previous.imageWidth() != current.imageWidth()
+                || previous.imageHeight() != current.imageHeight()
+                || Math.abs(previous.cameraHeightMeters() - current.cameraHeightMeters()) > 1.0e-3
+                || Math.abs(previous.focalLengthYNormalized() - current.focalLengthYNormalized()) > 1.0e-3
+                || Math.abs(previous.principalPointYNormalized()
+                - current.principalPointYNormalized()) > 1.0e-3
+                || Math.abs(previous.pitchDegrees() - current.pitchDegrees()) > 0.5;
     }
 
     private static double area(VehicleDetector.Detection box, int width, int height) {

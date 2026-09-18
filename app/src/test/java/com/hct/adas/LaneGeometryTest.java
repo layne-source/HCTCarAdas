@@ -156,15 +156,15 @@ public final class LaneGeometryTest {
     }
 
     @Test
-    public void straightLaneHasNoCurvatureInsteadOfAnInfiniteRadius() {
+    public void straightLaneIsExplicitlyKnownInsteadOfUnknown() {
         CameraCalibration calibration = CameraCalibration.fromWizard(WIDTH, HEIGHT, 1.25, 90.0, 8.0);
         List<LaneGeometry.WidthSample> straight = new ArrayList<>();
         for (double z : new double[] {6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0}) {
             straight.add(sampleAtDepth(calibration, z, 0.0, 8.0));
         }
         double radius = LaneGeometry.curvatureRadiusMeters(calibration, 8.0, straight, WIDTH, HEIGHT);
-        assertTrue("A straight lane must report no curvature, not a 10 km radius",
-                Double.isNaN(radius));
+        assertTrue("A straight lane must be represented as a known straight result",
+                Double.isInfinite(radius));
         assertEquals("", LaneGeometry.curveDirection(radius));
     }
 

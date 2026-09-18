@@ -115,6 +115,19 @@ public final class LaneDepartureDetectorTest {
     }
 
     @Test
+    public void coldStartMissingFirstRowKeepsSearchingUntilBoundaryIsFound() {
+        byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+        int firstSampleRow = (int) Math.round(LaneDepartureDetector.ROI_TOP_ROW * HEIGHT);
+        Arrays.fill(road, firstSampleRow * WIDTH, (firstSampleRow + 1) * WIDTH, (byte) 70);
+
+        LaneDepartureDetector.Observation observation = new LaneDepartureDetector().detect(
+                road, WIDTH, HEIGHT);
+
+        assertTrue("A missing first row must not prevent cold-start tracking", observation.available());
+        assertTrue(observation.widthSamples().size() >= 7);
+    }
+
+    @Test
     public void threeDistantSightingsDoNotPublishSparseGeometry() {
         LaneDepartureDetector detector = new LaneDepartureDetector();
         byte[] road = createSyntheticRoad(WIDTH, HEIGHT, 0.0);

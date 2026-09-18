@@ -43,6 +43,7 @@ public final class MainActivity extends Activity {
      * value once lane markings are seen and reports the deviation the installer has to correct.
      */
     private static final double INITIAL_PITCH_DEGREES = 8.0;
+    private static final long LANE_SNAPSHOT_HOLD_MILLIS = 1_200L;
     /**
      * Camera height above ground for the presets the wizard offers. These describe where the lens sits
      * for a windshield-inside mount just below the factory forward camera, which is the installation
@@ -580,6 +581,10 @@ public final class MainActivity extends Activity {
         AdasUiStatusMapper.Status status = AdasUiStatusMapper.forward(shown, targetVisible,
                 ttc, distance, speed, shown.headwayWarning());
         LaneGeometry.LaneSnapshot lane = analysis == null ? null : analysis.laneGeometry();
+        if (lane != null && (lane.timestampNanos() <= 0L
+                || System.currentTimeMillis() - lane.timestampNanos() > LANE_SNAPSHOT_HOLD_MILLIS)) {
+            lane = null;
+        }
         boolean laneSupported = calibrationStatus == CalibrationStore.Status.CALIBRATED
                 || simulator.isRunning();
         AdasUiStatusMapper.LaneStatus laneStatus = AdasUiStatusMapper.lane(lane, laneSupported,
@@ -907,10 +912,13 @@ public final class MainActivity extends Activity {
                 result.timestampNanos() / 1_000_000L, speed,
                 decisionDistance, motion.closingSpeedMps(),
                 motion.targetAreaPixels(), motion.visible());
+        double laneOffsetFraction = laneGeometry.centerOffsetLaneFraction();
+        boolean currentMetricLane = lane != null && lane.available() && lane.hasWidthSamples();
         AdasDecisionEngine.LaneObservation laneObservation =
                 (!simulationFrame && calibrationStatus != CalibrationStore.Status.CALIBRATED)
                         ? new AdasDecisionEngine.LaneObservation(0.0, 0.0, false)
-                        : new AdasDecisionEngine.LaneObservation(lane.centerOffset(), lane.confidence(), lane.available());
+                        : new AdasDecisionEngine.LaneObservation(laneOffsetFraction,
+                                lane.confidence(), currentMetricLane && Double.isFinite(laneOffsetFraction));
         AdasDecisionEngine.Decision decision = decisionEngine.update(observation, laneObservation);
         // Latency instrumentation only: age is measured against the capture timestamp, so it covers
         // sampling throttle plus preprocessing and inference for this decision.
