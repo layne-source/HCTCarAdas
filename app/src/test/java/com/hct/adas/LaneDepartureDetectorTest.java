@@ -93,9 +93,30 @@ public final class LaneDepartureDetectorTest {
         }
 
         LaneDepartureDetector.Observation tracked = detector.detect(next, WIDTH, HEIGHT);
-        assertTrue(tracked.available());
         assertTrue("same-side distractor must not replace the tracked left boundary",
-                tracked.leftTopX() > 0.30);
+                !tracked.available() || tracked.leftTopX() > 0.30);
+    }
+
+    @Test
+    public void persistentSameSideCompetitionDoesNotDriftTrackedBoundary() {
+        LaneDepartureDetector detector = new LaneDepartureDetector();
+        LaneDepartureDetector.Observation first = detector.detect(
+                createSyntheticRoad(WIDTH, HEIGHT, 0.0), WIDTH, HEIGHT);
+        assertTrue(first.available());
+
+        LaneDepartureDetector.Observation current = first;
+        for (int frame = 0; frame < 5; frame++) {
+            byte[] next = createSyntheticRoad(WIDTH, HEIGHT, 0.0);
+            dimLeftLane(next);
+            drawParallelLeftDistractor(next, 30, 255);
+            current = detector.detect(next, WIDTH, HEIGHT);
+            if (frame < 2) {
+                assertFalse(current.available());
+            }
+        }
+
+        assertTrue("a persistent brighter seam must not pull the tracked boundary away",
+                !current.available() || Math.abs(current.leftTopX() - first.leftTopX()) < 0.02);
     }
 
     @Test
@@ -238,6 +259,15 @@ public final class LaneDepartureDetectorTest {
                     nv21[y * WIDTH + x] = (byte) 160;
                 }
             }
+        }
+    }
+
+    private static void drawParallelLeftDistractor(byte[] nv21, int pixelOffset, int luma) {
+        for (int y = (int) (HEIGHT * 0.50); y <= (int) (HEIGHT * 0.85); y++) {
+            double normY = (double) y / HEIGHT;
+            double depth = (normY - 0.60) / (0.78 - 0.60);
+            int leftPx = (int) ((0.38 - depth * 0.18) * WIDTH);
+            drawStripe(nv21, WIDTH, HEIGHT, leftPx + pixelOffset, y, 6, luma);
         }
     }
 }

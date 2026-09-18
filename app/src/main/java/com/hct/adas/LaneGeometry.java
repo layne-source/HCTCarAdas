@@ -7,8 +7,11 @@ package com.hct.adas;
  * [0, 1] and {@code y} grows downwards, matching the detector. Canonical ground coordinates are
  * {@code Z} forwards and {@code X} to the right of the vehicle, in metres, so a positive
  * {@code X} means the point is to the right of the camera optical axis. Lateral distance uses the
- * pinhole relation {@code X = (x - 0.5) * cameraDepth / f}, assuming a centered principal point
- * and a camera aligned with the vehicle axis in yaw.
+ * pinhole relation {@code X = (x - 0.5) * Z_axis / f}, assuming a centered principal point and a
+ * camera aligned with the vehicle axis in yaw. For a row ray, the independent geometry contract is
+ * {@code Z_ground = H/tan(alpha + beta)} and {@code Z_axis = H*cos(beta)/sin(alpha + beta)}.
+ * Ground distance remains available through {@link CameraCalibration#estimateDistanceMeters(double)}
+ * for target range calculations.
  *
  * <p>The vertical focal length {@code f_y} is height-normalized (image height = 1) while the
  * horizontal one is width-normalized (image width = 1), so {@code f_x = f_y * height / width}.
@@ -106,7 +109,7 @@ public final class LaneGeometry {
         return calibration == null ? Double.NaN : calibration.estimateDistanceMeters(rowY);
     }
 
-    /** Lateral offset of a normalized image column at the given ground depth. */
+    /** Lateral offset of a normalized image column at the given camera-axis depth. */
     public static double lateralMeters(CameraCalibration calibration, double x, double zMeters,
                                        int frameWidth, int frameHeight) {
         if (calibration == null || !Double.isFinite(x) || !Double.isFinite(zMeters)
@@ -114,11 +117,7 @@ public final class LaneGeometry {
             return Double.NaN;
         }
         double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
-        double pitch = Math.toRadians(calibration.pitchDegrees());
-        double cameraDepth = zMeters * Math.cos(pitch)
-                + calibration.cameraHeightMeters() * Math.sin(pitch);
-        return fx > 0.0 && cameraDepth > 0.0
-                ? (x - 0.5) * cameraDepth / fx : Double.NaN;
+        return fx > 0.0 ? (x - 0.5) * zMeters / fx : Double.NaN;
     }
 
     /** Horizontal focal length normalized by image width, so x in [0, 1] maps linearly. */
@@ -144,9 +143,9 @@ public final class LaneGeometry {
     /**
      * Normalized image width of a lane of the given physical width, as seen at one image row.
      *
-     * <p>For pitch alpha and row-ray angle beta, camera depth is
-     * {@code H * cos(beta) / sin(alpha + beta)}. Thus normalized width is
-     * {@code W * f_x * sin(alpha + beta) / (H * cos(beta))}.
+     * <p>For pitch alpha and row-ray angle beta, the calibrated width contract is
+     * {@code W * f_x * sin(alpha + beta) / (H*cos(beta))}. The inverse below uses the same
+     * contract.
      *
      * <p>Height and horizontal focal length are therefore the two error sources of any absolute lane
      * width measurement, which is why the calibrated mounting angle is not replaced by this model.
@@ -166,8 +165,7 @@ public final class LaneGeometry {
         double beta = Math.atan((rowY - calibration.principalPointYNormalized()) / fy);
         double theta = Math.toRadians(pitchDegrees) + beta;
         double sin = Math.sin(theta);
-        double cos = Math.cos(theta);
-        if (sin <= 1.0e-4 || cos <= 1.0e-4) {
+        if (sin <= 1.0e-4 || Math.cos(theta) <= 1.0e-4) {
             return Double.NaN;
         }
         double fx = focalLengthXNormalized(calibration, frameWidth, frameHeight);
@@ -398,23 +396,27 @@ public final class LaneGeometry {
             if (!Double.isFinite(width) || width <= 0.0) {
                 continue;
             }
-            double z = distanceMeters(calibration, sample.rowY());
-            if (!Double.isFinite(z) || z < 4.0 || z > 60.0) {
+            double groundZ = distanceMeters(calibration, sample.rowY());
+            if (!Double.isFinite(groundZ) || groundZ < 4.0 || groundZ > 60.0) {
                 continue;
             }
-            double x = lateralMeters(calibration, 0.5 * (sample.leftX() + sample.rightX()), z,
+            double zAxis = cameraAxisDepthMeters(calibration, sample.rowY(), pitchDegrees);
+            if (!Double.isFinite(zAxis) || zAxis <= 0.0) {
+                continue;
+            }
+            double x = lateralMeters(calibration, 0.5 * (sample.leftX() + sample.rightX()), zAxis,
                     frameWidth, frameHeight);
             if (!Double.isFinite(x)) {
                 continue;
             }
             count++;
-            sumZ += z;
-            sumZ2 += z * z;
-            sumZ3 += z * z * z;
-            sumZ4 += z * z * z * z;
+            sumZ += groundZ;
+            sumZ2 += groundZ * groundZ;
+            sumZ3 += groundZ * groundZ * groundZ;
+            sumZ4 += groundZ * groundZ * groundZ * groundZ;
             sumX += x;
-            sumZX += z * x;
-            sumZ2X += z * z * x;
+            sumZX += groundZ * x;
+            sumZ2X += groundZ * groundZ * x;
         }
         if (count < 4) {
             return Double.NaN;
@@ -434,9 +436,24 @@ public final class LaneGeometry {
         }
         double z = CURVATURE_EVALUATION_METERS;
         double slope = 2.0 * a * z + b;
-        // X grows to the right: positive quadratic curvature means a right turn.
+        // The published ISO 8855 sign is negative for a left curve. With X growing to the right,
+        // a negative fitted quadratic coefficient therefore maps through 2a.
         double radius = Math.pow(1.0 + slope * slope, 1.5) / (2.0 * a);
         return Double.isFinite(radius) && radius != 0.0 ? radius : Double.NaN;
+    }
+
+    /** Camera-axis depth for a row ray: H*cos(beta)/sin(alpha + beta). */
+    private static double cameraAxisDepthMeters(CameraCalibration calibration, double rowY,
+                                                double pitchDegrees) {
+        if (calibration == null || !Double.isFinite(rowY) || !Double.isFinite(pitchDegrees)) {
+            return Double.NaN;
+        }
+        double beta = Math.atan((rowY - calibration.principalPointYNormalized())
+                / calibration.focalLengthYNormalized());
+        double theta = Math.toRadians(pitchDegrees) + beta;
+        double sin = Math.sin(theta);
+        return sin > 1.0e-4
+                ? calibration.cameraHeightMeters() * Math.cos(beta) / sin : Double.NaN;
     }
 
     /**
@@ -483,7 +500,7 @@ public final class LaneGeometry {
         return new double[] {m[0][3], m[1][3], m[2][3]};
     }
 
-    /** Convenience for direction text: positive curvature means the road turns right. */
+    /** Convenience for direction text: negative curvature means the road turns left. */
     public static String curveDirection(double curvatureRadiusMeters) {
         if (!Double.isFinite(curvatureRadiusMeters)) {
             return "";

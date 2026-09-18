@@ -111,7 +111,7 @@ public final class AdasSimulationTest {
         }
 
         assertTrue("HMW visual caution must be observed", hmwVisualObserved);
-        assertTrue("HMW critical chime event must be triggered when <= 4.5m", hmwCriticalTriggered);
+        assertTrue("HMW critical chime event must be triggered when <= 4.0m", hmwCriticalTriggered);
     }
 
     @Test

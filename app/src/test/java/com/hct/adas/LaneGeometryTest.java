@@ -141,7 +141,8 @@ public final class LaneGeometryTest {
 
     @Test
     public void curvatureRadiusMatchesASyntheticArc() {
-        // Negative lateral displacement with increasing depth is a left curve.
+        // X grows to the right. A negative lateral displacement with increasing ground depth has
+        // a negative fitted quadratic coefficient and therefore maps to the published left radius.
         List<LaneGeometry.WidthSample> leftCurve = arcSamples(CALIBRATION, 250.0, 8.0, -1.0);
         double radius = LaneGeometry.curvatureRadiusMeters(CALIBRATION, 8.0, leftCurve,
                 WIDTH, HEIGHT);
@@ -186,9 +187,12 @@ public final class LaneGeometryTest {
                                                              double radius, double pitchDegrees,
                                                              double direction) {
         List<LaneGeometry.WidthSample> samples = new ArrayList<>();
-        for (double z : new double[] {6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0}) {
-            double lateral = direction * (radius - Math.sqrt(radius * radius - z * z));
-            samples.add(sampleAtDepth(calibration, z, lateral, pitchDegrees));
+        for (double groundZ : new double[] {6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0}) {
+            // Build the world lane centre directly in ground coordinates. The production fit then
+            // has to recover this curve using its independently computed camera projection.
+            double lateral = direction * (radius
+                    - Math.sqrt(radius * radius - groundZ * groundZ));
+            samples.add(sampleAtDepth(calibration, groundZ, lateral, pitchDegrees));
         }
         return samples;
     }
@@ -199,28 +203,53 @@ public final class LaneGeometryTest {
      */
     private static LaneGeometry.WidthSample sampleAtDepth(CameraCalibration calibration, double z,
                                                          double lateral, double pitchDegrees) {
-        double rowY = LaneGeometry.rowForDistance(calibration, z);
-        double width = LaneGeometry.laneWidthModelMeters(calibration, rowY, pitchDegrees,
-                LANE_WIDTH, WIDTH, HEIGHT);
-        double fx = LaneGeometry.focalLengthXNormalized(calibration, WIDTH, HEIGHT);
-        double pitch = Math.toRadians(pitchDegrees);
-        double cameraDepth = z * Math.cos(pitch)
-                + calibration.cameraHeightMeters() * Math.sin(pitch);
-        double centerX = 0.5 + lateral * fx / cameraDepth;
-        return new LaneGeometry.WidthSample(rowY, centerX - width / 2.0, centerX + width / 2.0, 0.9);
+        double rowY = projectGroundPoint(calibration, lateral, z, pitchDegrees)[1];
+        double leftX = projectGroundPoint(calibration, lateral - LANE_WIDTH / 2.0, z,
+                pitchDegrees)[0];
+        double rightX = projectGroundPoint(calibration, lateral + LANE_WIDTH / 2.0, z,
+                pitchDegrees)[0];
+        return new LaneGeometry.WidthSample(rowY, leftX, rightX, 0.9);
     }
 
-    /** Independent ground-to-camera projection, without using the production width model. */
+    /** Independent ground-world projection, without using the production width model. */
     private static double projectedWidth(CameraCalibration calibration, double row, double pitchDegrees) {
-        double pitch = Math.toRadians(pitchDegrees);
-        double ray = (row - calibration.principalPointYNormalized())
-                / calibration.focalLengthYNormalized();
-        double groundDepth = calibration.cameraHeightMeters()
-                * (Math.cos(pitch) - ray * Math.sin(pitch))
-                / (Math.sin(pitch) + ray * Math.cos(pitch));
-        double cameraDepth = groundDepth * Math.cos(pitch)
-                + calibration.cameraHeightMeters() * Math.sin(pitch);
-        return LANE_WIDTH * calibration.focalLengthYNormalized() * HEIGHT / WIDTH / cameraDepth;
+        double beta = Math.atan((row - calibration.principalPointYNormalized())
+                / calibration.focalLengthYNormalized());
+        double theta = Math.toRadians(pitchDegrees) + beta;
+        double groundZ = calibration.cameraHeightMeters() / Math.tan(theta);
+        double leftX = projectGroundPoint(calibration, -LANE_WIDTH / 2.0, groundZ,
+                pitchDegrees)[0];
+        double rightX = projectGroundPoint(calibration, LANE_WIDTH / 2.0, groundZ,
+                pitchDegrees)[0];
+        return rightX - leftX;
+    }
+
+    /** Independent world-ground to image projection using the camera pitch rotation. */
+    private static double[] projectGroundPoint(CameraCalibration calibration, double groundX,
+                                               double groundZ, double pitchDegrees) {
+        double alpha = Math.toRadians(pitchDegrees);
+        double cameraZ = groundZ * Math.cos(alpha)
+                + calibration.cameraHeightMeters() * Math.sin(alpha);
+        double cameraY = calibration.cameraHeightMeters() * Math.cos(alpha)
+                - groundZ * Math.sin(alpha);
+        double fx = calibration.focalLengthYNormalized() * HEIGHT / WIDTH;
+        double imageX = 0.5 + fx * groundX / cameraZ;
+        double imageY = calibration.principalPointYNormalized()
+                + calibration.focalLengthYNormalized() * cameraY / cameraZ;
+        return new double[] {imageX, imageY, cameraZ};
+    }
+
+    @Test
+    public void lateralProjectionUsesIndependentOpticalDepthRelation() {
+        double groundDepth = 10.0;
+        double lateral = 1.25;
+        double[] projected = projectGroundPoint(CALIBRATION, lateral, groundDepth,
+                CALIBRATION.pitchDegrees());
+        // Independent pinhole relation after the pitch rotation: x = 0.5 + fx*X/Z_axis.
+        double imageX = projected[0];
+        double opticalDepth = projected[2];
+        assertEquals(lateral, LaneGeometry.lateralMeters(CALIBRATION, imageX, opticalDepth,
+                WIDTH, HEIGHT), 1.0e-9);
     }
 
     @Test
@@ -234,7 +263,7 @@ public final class LaneGeometryTest {
 
     @Test
     public void uncalibratedPitchDoesNotPublishMetricGeometry() {
-        List<LaneGeometry.WidthSample> samples = arcSamples(CALIBRATION, 250.0, 8.0, 1.0);
+        List<LaneGeometry.WidthSample> samples = arcSamples(CALIBRATION, 250.0, 8.0, -1.0);
         LaneGeometry.LaneSnapshot snapshot = LaneGeometry.snapshot(1L, CALIBRATION, Double.NaN,
                 samples.get(0), samples, WIDTH, HEIGHT);
         assertTrue(snapshot.valid());

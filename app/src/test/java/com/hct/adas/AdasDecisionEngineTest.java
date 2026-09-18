@@ -34,7 +34,7 @@ public final class AdasDecisionEngineTest {
     public void emitsCriticalHeadwayWarningWhenVeryClose() {
         AdasDecisionEngine engine = new AdasDecisionEngine();
 
-        // 4.0m <= 4.5m critical threshold, not pulling away
+        // 4.0m is the critical threshold, and the target is not pulling away.
         AdasDecisionEngine.Decision decision = engine.update(
                 observation(0L, 25.0, 4.0, 0.0, 1000.0, true));
         assertTrue(decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL));

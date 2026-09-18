@@ -429,8 +429,11 @@ public final class VehicleOverlayView extends View {
         return Math.max(0L, System.currentTimeMillis() - laneSnapshot.timestampNanos()) * 1_000_000L;
     }
 
-    /** Boundary colour: red on a hazard, amber on caution, grey without a valid speed. */
+    /** Boundary colour: grey for diagnostic/un-calibrated geometry, then hazard/caution colours. */
     private int laneColor() {
+        if (calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null) {
+            return 0xFFB0BEC5;
+        }
         if (decision != null && (decision.collisionDanger() || decision.headwayCritical()
                 || decision.events().contains(AdasDecisionEngine.Alert.FCW)
                 || decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL))) {

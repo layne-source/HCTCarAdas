@@ -56,6 +56,12 @@ public final class LaneDepartureDetector {
     private static final double POSITION_PENALTY_PER_NORMALIZED_PIXEL = 4000.0;
     /** Keep brightness as evidence, but make position continuity the dominant cue in a narrow search. */
     private static final double RIDGE_SCORE_WEIGHT = 0.40;
+    /** A candidate this far from the predicted boundary is treated as a possible replacement. */
+    private static final double MAX_CONTINUITY_RESIDUAL = 0.035;
+    /** A discontinuous boundary must be observed repeatedly before it replaces track history. */
+    private static final int REPLACEMENT_CONFIRM_FRAMES = 3;
+    /** Candidate positions are considered the same replacement while their fit remains close. */
+    private static final double REPLACEMENT_POSITION_TOLERANCE = 0.02;
 
     public record Observation(double centerOffset, double confidence, boolean available,
                               double leftTopX, double rightTopX,
@@ -207,16 +213,21 @@ public final class LaneDepartureDetector {
         }
     }
 
+    private record PendingReplacement(double topX, double bottomX, int frames) { }
+
     private Observation last;
     private int lastWidth;
     private int lastHeight;
     private int missedFrames;
+    private PendingReplacement pendingLeftReplacement;
+    private PendingReplacement pendingRightReplacement;
 
     public void reset() {
         last = null;
         lastWidth = 0;
         lastHeight = 0;
         missedFrames = 0;
+        clearPendingReplacements();
     }
 
     public Observation detect(byte[] nv21, int width, int height) {
@@ -257,6 +268,10 @@ public final class LaneDepartureDetector {
         double centerOffset = (leftBottom + rightBottom) * 0.5 - 0.5;
         Observation current = new Observation(centerOffset, confidence, available,
                 leftTop, rightTop, leftBottom, rightBottom, samples);
+        Observation stabilized = stabilizeReplacement(current);
+        if (stabilized != current) {
+            return stabilized;
+        }
         if (last != null && last.available() && current.available()) {
             current = blend(last, current, TEMPORAL_BLEND);
         }
@@ -400,6 +415,24 @@ public final class LaneDepartureDetector {
         if (candidates.isEmpty()) {
             return RidgeCandidate.NONE;
         }
+        if (!wideSearch && Double.isFinite(reference)) {
+            RidgeCandidate nearest = candidates.get(0);
+            double nearestDistance = Math.abs(nearest.x() / (double) width - reference);
+            for (RidgeCandidate candidate : candidates) {
+                double distance = Math.abs(candidate.x() / (double) width - reference);
+                if (distance < nearestDistance) {
+                    nearest = candidate;
+                    nearestDistance = distance;
+                }
+            }
+            // A real ridge already close to the predicted boundary is stronger continuity
+            // evidence than a brighter seam farther away. Brightness only ranks candidates
+            // when no plausible continuation survived the local contrast gate.
+            if (nearest.ridge() >= MIN_RIDGE_RESPONSE
+                    && nearestDistance <= SEARCH_HALF_WIDTH * 0.85) {
+                return nearest;
+            }
+        }
         RidgeCandidate best = RidgeCandidate.NONE;
         double bestScore = -Double.MAX_VALUE;
         for (RidgeCandidate candidate : candidates) {
@@ -451,6 +484,7 @@ public final class LaneDepartureDetector {
 
     private Observation unavailableKeepingHistory() {
         missedFrames++;
+        clearPendingReplacements();
         if (missedFrames > MAX_TRACK_MISSES) {
             last = null;
         }
@@ -459,6 +493,72 @@ public final class LaneDepartureDetector {
 
     private static boolean finite(double value) {
         return Double.isFinite(value);
+    }
+
+    /**
+     * Holds a geometry jump for a few frames. A one-frame seam or adjacent marking can otherwise
+     * become the new history simply because it is brighter than the real lane edge.
+     */
+    private Observation stabilizeReplacement(Observation current) {
+        if (last == null || !last.available() || !current.available()) {
+            clearPendingReplacements();
+            return current;
+        }
+        boolean leftJump = boundaryJump(last.leftTopX(), last.leftBottomX(),
+                current.leftTopX(), current.leftBottomX());
+        boolean rightJump = boundaryJump(last.rightTopX(), last.rightBottomX(),
+                current.rightTopX(), current.rightBottomX());
+        // A real camera/lane displacement moves both boundaries coherently. A jump on only one
+        // side is the characteristic shape of a seam or adjacent marking, so never promote it to
+        // tracking history even when it stays bright for many frames.
+        if (leftJump != rightJump) {
+            clearPendingReplacements();
+            missedFrames = Math.min(MAX_TRACK_MISSES, missedFrames + 1);
+            return Observation.UNAVAILABLE;
+        }
+        pendingLeftReplacement = updatePending(pendingLeftReplacement, leftJump,
+                current.leftTopX(), current.leftBottomX());
+        pendingRightReplacement = updatePending(pendingRightReplacement, rightJump,
+                current.rightTopX(), current.rightBottomX());
+        boolean leftConfirmed = !leftJump || confirmed(pendingLeftReplacement);
+        boolean rightConfirmed = !rightJump || confirmed(pendingRightReplacement);
+        if (!leftConfirmed || !rightConfirmed) {
+            // Keep the previous geometry only as search history. Publishing it as a fresh
+            // observation would refresh its timestamp downstream and let calibration/LDW consume
+            // stale width samples while a brighter replacement is still being verified.
+            missedFrames = Math.min(MAX_TRACK_MISSES, missedFrames + 1);
+            return Observation.UNAVAILABLE;
+        }
+        clearPendingReplacements();
+        return current;
+    }
+
+    private static PendingReplacement updatePending(PendingReplacement pending, boolean jumped,
+                                                    double topX, double bottomX) {
+        if (!jumped) {
+            return null;
+        }
+        if (pending == null
+                || Math.abs(pending.topX() - topX) > REPLACEMENT_POSITION_TOLERANCE
+                || Math.abs(pending.bottomX() - bottomX) > REPLACEMENT_POSITION_TOLERANCE) {
+            return new PendingReplacement(topX, bottomX, 1);
+        }
+        return new PendingReplacement(topX, bottomX, pending.frames() + 1);
+    }
+
+    private static boolean confirmed(PendingReplacement pending) {
+        return pending != null && pending.frames() >= REPLACEMENT_CONFIRM_FRAMES;
+    }
+
+    private static boolean boundaryJump(double previousTop, double previousBottom,
+                                        double currentTop, double currentBottom) {
+        return Math.abs(currentTop - previousTop) > MAX_CONTINUITY_RESIDUAL
+                || Math.abs(currentBottom - previousBottom) > MAX_CONTINUITY_RESIDUAL;
+    }
+
+    private void clearPendingReplacements() {
+        pendingLeftReplacement = null;
+        pendingRightReplacement = null;
     }
 
     private static int luma(byte[] nv21, int width, int x, int y) {

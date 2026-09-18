@@ -41,6 +41,25 @@ public final class LeadVehicleMotionEstimatorTest {
     }
 
     @Test
+    public void clearsVelocityHistoryAfterLostBeforeTargetReappears() {
+        LeadVehicleMotionEstimator estimator = new LeadVehicleMotionEstimator();
+        estimator.update(snapshot(1, 0.75f, 2L), CALIBRATION, 1280, 720);
+        LeadVehicleMotionEstimator.Measurement moving = estimator.update(
+                snapshot(1, 0.80f, 202L), CALIBRATION, 1280, 720);
+        assertTrue(moving.closingSpeedMps() > 0.0);
+
+        LeadVehicleTracker.Snapshot lost = new LeadVehicleTracker.Snapshot(
+                302_000_000L, LeadVehicleTracker.State.LOST, 1L, null);
+        assertTrue(!estimator.update(lost, CALIBRATION, 1280, 720).visible());
+
+        LeadVehicleMotionEstimator.Measurement recovered = estimator.update(
+                snapshot(1, 0.85f, 402L), CALIBRATION, 1280, 720);
+        assertTrue(recovered.visible());
+        assertEquals("a LOST gap must not create a stale closing-speed spike",
+                0.0, recovered.closingSpeedMps(), 0.0001);
+    }
+
+    @Test
     public void rejectsBoundingBoxClippedByImageBorder() {
         LeadVehicleMotionEstimator estimator = new LeadVehicleMotionEstimator();
         VehicleDetector.Detection clipped = new VehicleDetector.Detection(

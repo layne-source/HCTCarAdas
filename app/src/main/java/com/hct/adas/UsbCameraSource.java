@@ -21,6 +21,7 @@ import com.serenegiant.usb.UVCCamera;
 
 import java.nio.ByteBuffer;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -69,6 +70,49 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     // The camera thread exclusively owns these native resources.
     private UVCCamera camera;
     private USBMonitor monitor;
+
+    /** Preview modes are tried from the preferred analysis size down to broadly supported UVC modes. */
+    static final class PreviewConfig {
+        final int width;
+        final int height;
+        final int format;
+
+        PreviewConfig(int width, int height, int format) {
+            this.width = width;
+            this.height = height;
+            this.format = format;
+        }
+    }
+
+    static PreviewConfig[] previewCandidates() {
+        return new PreviewConfig[] {
+                new PreviewConfig(1280, 720, UVCCamera.FRAME_FORMAT_MJPEG),
+                new PreviewConfig(640, 480, UVCCamera.FRAME_FORMAT_MJPEG),
+                new PreviewConfig(1920, 1080, UVCCamera.FRAME_FORMAT_MJPEG),
+                new PreviewConfig(1280, 720, UVCCamera.FRAME_FORMAT_YUYV),
+                new PreviewConfig(640, 480, UVCCamera.FRAME_FORMAT_YUYV),
+                new PreviewConfig(320, 240, UVCCamera.FRAME_FORMAT_YUYV),
+        };
+    }
+
+    static String buildCameraId(int vendorId, int productId, String serial, String deviceName) {
+        String normalizedSerial = serial == null ? "" : serial.trim();
+        if (!normalizedSerial.isEmpty()) {
+            return String.format(Locale.US, "usb:%d:%d:serial:%s", vendorId, productId,
+                    normalizedSerial);
+        }
+        // Device paths and USB addresses can be reused after unplug/replug. Never persist them as
+        // calibration identities, and never fall back to VID/PID alone: identical UVC devices
+        // could otherwise share calibration. The caller will remain unbound until re-calibration.
+        return "";
+    }
+
+    static boolean surfaceTextureDestroyedReturnValue() {
+        // The camera thread releases the texture after detaching the native preview. Returning
+        // false transfers ownership to this listener; returning true would make TextureView
+        // release it immediately as well.
+        return false;
+    }
 
     private final Runnable frameWatchdog = new Runnable() {
         @Override
@@ -232,6 +276,22 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         return running && generation.get() == token;
     }
 
+    private static PreviewConfig configurePreview(UVCCamera camera) {
+        RuntimeException lastUnsupported = null;
+        for (PreviewConfig candidate : previewCandidates()) {
+            try {
+                camera.setPreviewSize(candidate.width, candidate.height, candidate.format);
+                return candidate;
+            } catch (RuntimeException unsupported) {
+                lastUnsupported = unsupported;
+            }
+        }
+        if (lastUnsupported != null) {
+            throw lastUnsupported;
+        }
+        throw new IllegalArgumentException("USB 摄像头没有可用的视频格式");
+    }
+
     private void openCamera(int token, UsbDevice device, SurfaceTexture target) {
         if (!isCurrent(token)) {
             return;
@@ -242,15 +302,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             monitor = new USBMonitor(activity.getApplicationContext(), NO_MONITOR_CALLBACKS);
             camera = new UVCCamera();
             camera.open(monitor.openDevice(device));
-            int width = 1280;
-            int height = 720;
-            try {
-                camera.setPreviewSize(width, height, UVCCamera.FRAME_FORMAT_MJPEG);
-            } catch (IllegalArgumentException unsupportedSize) {
-                width = 640;
-                height = 480;
-                camera.setPreviewSize(width, height, UVCCamera.FRAME_FORMAT_MJPEG);
-            }
+            PreviewConfig preview = configurePreview(camera);
+            int width = preview.width;
+            int height = preview.height;
             int frameWidth = width;
             int frameHeight = height;
             long[] lastSample = {0}; // Confined to the native frame callback thread.
@@ -379,7 +433,15 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         if (device == null) {
             return "";
         }
-        return "usb:" + device.getVendorId() + ":" + device.getProductId();
+        String serial = "";
+        try {
+            serial = device.getSerialNumber();
+        } catch (RuntimeException unavailable) {
+            // Access to the serial is permission-gated on some Android builds. The device path
+            // is intentionally not persisted because USB addresses can be reused.
+        }
+        return buildCameraId(device.getVendorId(), device.getProductId(), serial,
+                device.getDeviceName());
     }
     /** Allows the foreground UI to retry after the bounded automatic retries are exhausted. */
     public void retryOpen() {
@@ -472,7 +534,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         })) {
             texture.release();
         }
-        return false;
+        // The listener releases the texture after the camera has detached from it. Returning false
+        // tells TextureView not to release the same SurfaceTexture a second time.
+        return surfaceTextureDestroyedReturnValue();
     }
 
     @Override

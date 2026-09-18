@@ -3,10 +3,10 @@
 | 项目 | 内容 |
 | --- | --- |
 | 审查对象 | `HCTCarAdas` 独立 Android 工程（Java 前台原型） |
-| 审查基线 | **rev.7 基线：Git HEAD `6534ca0`**（rev.5 为 `c6c1b46`，rev.4 为 `32ea041`，rev.3 为 `6599789`，rev.1/rev.2 为 `9ac35f0`） |
-| 审查方式 | 全量静态审查（代码只读），未编译、未运行 Gradle、未做设备验证 |
-| 审查范围 | 主源 18 文件 + 单元测试 11 类 87 方法 + 资源 + 两份方案文档一致性 |
-| 结论定性 | 链路骨架健康，无方向性缺陷；**rev.7 分段实测——管线 78.5 ms、排队 0、测量段 ≈180 ms、端到端 ≈580 ms，判定暂不改动确认参数**；P1、P2 全部关闭 |
+| 审查基线 | **rev.7 历史基线：Git HEAD `6534ca0`；当前为 2026-09-18 未提交工作区加固** |
+| 审查方式 | 全量静态审查；Gradle focused suite 受环境 `Unable to establish loopback connection` 阻断；另用临时 `javac + JUnit` harness 跑了 106 个纯 Java 用例；未做设备验证 |
+| 审查范围 | 主源当前 20 个 Java 类 + 单元测试当前 14 类 143 个 `@Test` 方法 + 资源 + 两份方案文档一致性 |
+| 结论定性 | 历史 P1/P2 已闭环；当前工作区补入车道同侧连续性、`LOST` 重获速度清理、LiteRT 退避、精确定位权限门控、USB 生命周期/格式协商和音频主动抢占。几何、真实 UVC、LiteRT、音频和道路投影仍需设备验证 |
 | 修订记录 | **rev.2**：撤销 2 项误判、重定性 2 项为产品权衡<br>**rev.3**：基线 `6599789`，闭环 3 项 P1 + 2 组 P2，新增 P2-10<br>**rev.4**：基线 `32ea041`，闭环 P0-2 与 P2-10、新增 P2-11<br>**rev.5**：基线 `c6c1b46`，P1/P2 级别全部关闭（含 P2-8 按车机常亮前提关闭）；详见第 0 节 |
 
 ---
@@ -21,6 +21,18 @@ rev.5 之后新增 4 个提交：一个崩溃修复与三次实测驱动的口�
 | `fdddffc` | `Split=` 分段仪表（交接/排队/处理） | 使"延迟归到哪一段"可测 |
 | `6534ca0` | **修复心跳日志格式符类型不匹配导致的进程崩溃**；日志格式化抽到 `AdasLogFormat` 并补 5 个单测 | 新增第 10 节；测试 82 → 87 |
 | `6f5d3e1` / `b1d2134` | 报告同步 | — |
+
+### 0.4 2026-09-18 工作区加固（未提交）
+
+当前工作区在历史基线之上还有以下改动；这些改动本轮只做静态审查，未宣称构建或设备通过：
+
+| 模块 | 当前行为 | 仍需验证 |
+|---|---|---|
+| `LaneDepartureDetector` | 热启动使用上一帧边界 ±0.07 搜索窗，并对位置跳变施加惩罚；冷启动才扫描整半幅 | 同侧接缝、邻近标线和真实夜间/雨雾帧 |
+| `LeadVehicleMotionEstimator` | `LOST`、ID 变化、时间倒退/间隔过大或标定变化清空速度历史，重获从零估计 | 真实遮挡重获和目标切换 |
+| `UsbCameraSource` | SurfaceTexture 由 listener 单次释放并返回 `false`；opening 8 s 与无帧 3 s watchdog；serial 身份，无 serial 不绑定；MJPEG/YUYV 多档协商 | AAR 控制块、真实格式枚举、热插拔和授权广播 |
+| `MainActivity` | LiteRT 运行时异常 5/10/20/40 s 退避；车速链路要求 FINE，COARSE 仅提示升级权限 | 真模型损坏/运行时异常、定位质量和 UI 故障提示 |
+| `AlertAudio` | 高优先级事件停止已有低优先级 SoundPool 流和 ToneGenerator；停止时清理优先级锁 | 实车音频焦点、媒体静音和声压 |
 
 **rev.7 的核心修正是一处口径错误**：rev.6 把心跳的 `Age`（202 ms 均值）当作"测量段延迟"，但分段数据显示它与真实成本之和相差 **127 ms（均值）**——那部分是心跳采样时刻的相位，属观测伪影。**真实管线成本是 78.5 ms，不是 202 ms。** 端到端随之从 ≈600 ms 修正为 **≈580 ms**。
 
@@ -101,19 +113,19 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 
 ### 1.1 覆盖清单
 
-`app/src/main/java/com/hct/adas/` 全部 17 个类：
+`app/src/main/java/com/hct/adas/` 当前全部 20 个类：
 
 | 层 | 类 |
 | --- | --- |
 | 采集 | `UsbCameraSource`(478) `FrameDispatcher`(103) `FrameConsumer`(116) |
-| 感知 | `LiteRtVehicleDetector`(137) `Nv21Preprocessor`(68) `LaneDepartureDetector`(142) |
-| 跟踪与测距 | `LeadVehicleTracker`(216) `LeadVehicleMotionEstimator`(83) `CameraCalibration`(92) |
+| 感知 | `LiteRtVehicleDetector` `Nv21Preprocessor` `LaneDepartureDetector` |
+| 跟踪与测距 | `LeadVehicleTracker` `LeadVehicleMotionEstimator` `CameraCalibration` `LaneGeometry` |
 | 标定 | `AutoCalibrationLearner`(259) `CalibrationStore`(135) |
-| 决策 | `AdasDecisionEngine`(325) |
-| 输出 | `AlertAudio`(265) `VehicleOverlayView`(252) |
-| 编排 | `MainActivity`(1,044) `AdasSimulator`(293) `VehicleDetector`(22) |
+| 决策 | `AdasDecisionEngine` `AdasUiStatusMapper` |
+| 输出 | `AlertAudio` `VehicleOverlayView` `AdasLogFormat` |
+| 编排 | `MainActivity` `AdasSimulator` `VehicleDetector` |
 
-配套：`app/src/test/java/com/hct/adas/` 10 个测试类，`AndroidManifest.xml`，`activity_main.xml`，`strings.xml`，`app/build.gradle`，以及构建产物 `app/build/intermediates/apk/debug/app-debug.apk`。
+配套：`app/src/test/java/com/hct/adas/` 当前 14 个测试类、143 个 `@Test` 方法，另有 `UsbCameraSourceTest` 等本轮契约测试；`AndroidManifest.xml`、`activity_main.xml`、`strings.xml`、`app/build.gradle`。本轮不以工作区构建产物作为新鲜验证证据。
 
 ### 1.2 构建产物与源码同源校验
 
@@ -128,7 +140,7 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 | `自动重试已用尽` | `UsbCameraSource.frameWatchdog` | FOUND |
 | `报警音不可用` | `MainActivity.renderMetrics` | FOUND |
 
-**结论**：APK 由当前 Java 源码构建，本报告结论对运行时行为有效。
+**结论（历史基线）**：该 APK 只证明 2026-09-17 的历史源码曾构建成功；当前工作区在 2026-09-18 有未包含在 APK 内的几何、USB、推理和音频改动，因此本报告不把该 APK 当作当前源码的构建证据。
 
 ### 1.2.1 性能实测数据来源
 
@@ -143,13 +155,13 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 
 1. 采样丢弃比 **约 84%**（5 / 31）——采集能力严重富余
 2. 消费者线程占用 **30–45%**（90 ms ÷ 200 ms）——推理非瓶颈
-3. 端到端延迟 **≈775 ms（均值）~ 890 ms（最坏）**，其中 600 ms 来自"3 帧 @5 Hz"确认
+3. 端到端延迟是历史 rev.2 派生值 **≈775 ms（均值）~ 890 ms（最坏）**，其中 600 ms 来自当时的"3 帧 @5 Hz"确认；rev.7 实测已修正为管线约 78.5 ms、测量段约 180 ms、端到端约 580 ms，当前 FCW 还要求 200 ms 时间跨度
 
 > **rev.2 保留声明**：上述实测基线及其派生的方向修正（含"提高采样率到 10 Hz 不成立"的判断，见 P0-1）在 rev.2 重排中**完整保留**，未被勘误修订覆盖。rev.2 只撤销了原 P0-4 / 原 P1-1 两项误判，未触碰性能数据。
 
 ### 1.3 审查边界
 
-- 未编译、未运行 Gradle、未执行单元测试（遵循项目约定，编译由用户负责）
+- Gradle focused suite 仍受环境 loopback 错误阻断；本轮临时 `javac + JUnit` harness 执行的 106 个纯 Java 用例全部通过，其中包含几何 26 项。USB 5 项契约测试仍只作源码/API 静态核对，未在 Android classpath 下重跑
 - 未做设备/实车验证（P1-2 的 USB 广播可达性因测试机预授权而未被走到，已在代码与报告中留档限定条件）
 - 未审查 `libusbcamera.aar` 内部实现（仅按调用契约推断）
 - 本报告不修改任何代码与既有文档
@@ -223,7 +235,7 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 | `AlertAudio.status()` 新判定 | `allSamplesLoaded()` 覆盖四个 wav；`playbackFailed` 仍作为独立降级路径保留 |
 | `FrameDispatcher.await()` 重载选择 | 纳秒余数 >0 → `wait(ms, ns)`；=0 → `wait(ms)`。语义正确，误改会立刻破坏行为 |
 | `fitPreview()` 缓存 | `appliedScaleX/Y` 在视图尺寸变化时自然失配并重算（`onLayoutChange` 与 metrics tick 都会调用），不会卡住旧矩阵 |
-| `reloadCalibrationForCamera()` | 仅在 camera id 非空时动作；未知 id 直接返回，瞬时断连不会误清标定 |
+| `reloadCalibrationForCamera()`（历史 rev.5） | 当时仅在 camera id 非空时动作；未知 id 直接返回，瞬时断连不会误清标定。当前工作区已改为：摄像头实际打开但无稳定 serial 时清除米制标定 |
 | 资源引用完整性 | 24 个字符串定义、23 个 Java 引用 + `app_name`（manifest）、布局引用全部有定义，无未使用项 |
 | 向导俯仰输入 | 校验在 `fromWizard` 之前抛出，越界时不会产生部分写入 |
 | 花括号平衡 / 空白 | 6 个改动文件全部通过，`git diff --check` 干净 |
@@ -303,7 +315,7 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 
 ### 3.3 标定可学域
 
-`AutoCalibrationLearner.solveVanishingPoint` 把有效灭点限制在 `y ∈ [0.30, 0.60]`（rev.3 值，`6599789` 由 0.35 收窄而来），经 `computePitchFromVanishingY` 换算（向导默认 90° HFOV / 1280×720 时 `fy_norm=0.889`、`cy=0.5`）：
+兼容 VP 路径的 `AutoCalibrationLearner.solveVanishingPoint` 把有效灭点限制在 `y ∈ [0.30, 0.60]`（真实帧当前主路径优先使用 widthSamples 的 implied pitch/MAD），经 `computePitchFromVanishingY` 换算（向导默认 90° HFOV / 1280×720 时 `fy_norm=0.889`、`cy=0.5`）：
 
 | 灭点 y | 反算 pitch | 说明 |
 | --- | --- | --- |
@@ -313,17 +325,17 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 | 0.35 | +9.6° | rev.2 的旧上限 |
 | **0.30** | **+12.7°** | **rev.3 上限**（`vanishingPitchLimitDegrees`） |
 
-**可学域由两道门共同决定**：
+**兼容 VP 路径的可学域由两道门共同决定**：
 
 1. **灭点窗口** `[0.30, 0.60]` → 反向 pitch `[−6.4°, +12.7°]`
-2. **ROI 可见性守卫** `isLaneRoiVisible`：远带（`ROI_TOP_ROW = 0.54`）地面距离须 ≥ `MIN_ROI_FAR_DISTANCE_METERS = 4.0 m`，近带（`ROI_BOTTOM_ROW = 0.84`）须 ≤ 40 m
+2. **ROI 可见性守卫** `isLaneRoiVisible`：远带（`ROI_TOP_ROW = 0.54`）地面距离须 ≥ `MIN_ROI_FAR_DISTANCE_METERS = 3.5 m`，近带（`ROI_BOTTOM_ROW = 0.82`）须 ≤ 40 m
 
 守卫在不同安装高度下的生效点（H = 相机离地高度）：
 
 | 安装高度 | 守卫开始拒绝的 pitch | 远带 4 m 判据 |
 | --- | --- | --- |
-| 1.25 m（轿车） | ≈14.8° | 高度相关 |
-| 1.75 m（货车） | >20°（未触发） | 同上 |
+| 1.30 m（轿车） | 约 14° 附近 | 高度相关 |
+| 2.00 m（货车） | 高度相关，通常更宽 | 同上 |
 | 2.00 m | >20°（未触发） | 同上 |
 
 **工程含义**（rev.3 更新）：
@@ -332,6 +344,12 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 - 窗口上限（12.68°）落在守卫生效点（14.78°，H=1.25）**内侧**，守卫不会拒绝窗口仍放行的样本，两者不自相矛盾
 - 守卫是**物理判据**（ROI 是否还看得到路）而非角度上限：同为 20°，H=1.25 被拒而 H=2.0 通过
 - **rev.4 已闭环**：原来"守卫拒绝只写日志、UI 一律显示 0%"的问题已修复——`21679fa` 增加 `Rejection` 分类与连续几何拒绝计数，`MainActivity` 在两处前置状态透出"安装角度超出可学习范围"提示。可学域的**边界值本身未变**，变化的是失败原因对用户可见
+
+**当前工作区几何契约（2026-09-18）**：真实车道帧优先走 `widthSamples` 的近/远宽度比，旧 VP 仅作无宽度样本的兼容路径。投影公式为
+`w_norm = W·f_x·sin(α+β)/(H·cosβ)`，`β = atan((y-c_y)/f_y)`；目标测距使用 `Z_ground=H/tan(α+β)`，横向米制值使用
+`Z_axis=H·cosβ/sin(α+β)` 和 `X=(x-0.5)·Z_axis/f_x`。发布的米制偏移先除以近端观测宽度再乘物理车道宽，车辆在车道中心右侧为正。曲率拟合 `X=aZ_ground²+bZ_ground+c` 后使用
+`R=(1+(2aZ_ground+b)²)^1.5/(2a)`，负值为 Left，正值为 Right；`|a|<1e-4` 显式表示已知直行。
+`LaneGeometryTest` 现在包含不复用生产函数的世界点投影/横向校验（显式使用相机 pitch 旋转、`Z_ground=H/tan(α+β)`、`Z_axis=H·cosβ/sin(α+β)` 和 `x=0.5+f_xX/Z_axis`）、偏移符号和曲率方向断言；临时 `javac + JUnit` harness 的 26 项几何/车道用例通过，Gradle 仍受 loopback 环境错误阻断。
 
 ---
 
@@ -395,8 +413,8 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 | 原残留项 | rev.4 状态 | 依据 |
 | --- | --- | --- |
 | 静默失败（UI 无区分） | ✅ 已闭环 | `Rejection` 四态 + `consecutiveGeometricRejections`；`MainActivity` 在 `WIZARD_COMPLETED` 与 `CALIBRATING` 两态透出提示 |
-| 收敛门槛未评估 | ⏳ 仍开放 | `MAX_CONVERGENCE_STD_DEV=0.015` + 60 样本未动，需真实抖动图像数据才能定论 |
-| 守卫阈值未做实车标定 | ⏳ 仍开放 | `MIN_ROI_FAR_DISTANCE_METERS=4.0` 仍是几何推导+经验值，需实车图像验证 |
+| 收敛门槛未评估 | ⏳ 仍开放 | 宽度主路径为 `MAX_CONVERGENCE_MAD_DEGREES=0.40` + 60 样本；需真实抖动图像数据才能定论 |
+| 守卫阈值未做实车标定 | ⏳ 仍开放 | `MIN_ROI_FAR_DISTANCE_METERS=3.5` 仍是几何推导+经验值，需实车图像验证 |
 
 **剩余影响**：可学域已放宽、失败原因已可见，但"4 m 阈值是否对应真实车道线可检距离"和"0.015 标准差门槛是否过严"两点仍需实车数据。两者都属**参数标定**而非逻辑缺陷。
 
@@ -478,9 +496,11 @@ public void resetTargetState() {
 
 ---
 
-## 5. P1 — 正确性与健壮性缺陷（rev.7：全部关闭）
+## 5. P1 — 正确性与健壮性缺陷（历史 rev.7：全部关闭）
 
 > P1-1 已随 `6599789` 闭环；P1-2 因测试机预授权而在本项目内关闭（限定条件见该节）；P1-3 已随 `ee79474` 闭环。
+
+本轮工作区没有重新打开历史 P1 编号；USB 生命周期、格式协商和推理退避属于新增加固，见第 0.4 节，仍以设备验证为准。
 
 ### P1-1 USB 看门狗不覆盖"打不开"阶段（原 P1-3，次序重排）—— ✅ rev.3 已闭环
 
@@ -534,12 +554,12 @@ CameraCalibration.fromWizard(width, height, heightMeters, hfov, initialPitch);
 
 | 实现点 | 说明 |
 | --- | --- |
-| 输入默认值 | 已有可用标定时预填其 pitch，否则填 4.0 |
-| 范围校验 | `parsePitchDegrees` 限制在 `[-5, +20]`，与 learner 的 `MIN/MAX_PITCH_DEGREES` 对齐；越界时提示"初始俯仰角须在 -5 ~ 20 度之间" |
-| 超出 ROI 上限的引导 | 填 ≥ `STEEP_PITCH_WARNING_DEGREES = 12.0` 时保存提示改为"当前俯仰角较大，若标定栏未开始收敛请按提示调整支架角度"，与几何拒绝提示形成闭环 |
+| 输入默认值 | 已有可用标定时预填其 pitch，否则当前填 `8.0°`（rev.4 历史记录中的 `4.0°` 已过时） |
+| 范围校验（历史 rev.4 描述） | 当时记录为 `[-5, +20]`；当前向导实际限制为 `[-5, +14]`、默认 `8.0°`，运行时 ROI 守卫仍负责高度相关的可见性判断 |
+| 超出 ROI 上限的引导 | 当前填 ≥ `STEEP_PITCH_WARNING_DEGREES = 14.0` 时保存提示改为"当前俯仰角较大，若标定栏未开始收敛请按提示调整支架角度"，与几何拒绝提示形成闭环 |
 | 说明文案 | 明示"已知角度直接填，未知保持默认" |
 
-**仍开放的边界**：有效 ROI 上限随安装高度变化（H=1.25 时约 14.8°、H=1.75 时 >20°），而向导只按 ±20° 做统一上限、不按高度细化。这是**有意的取舍**——高度相关的判定交给 learner 的 ROI 守卫在运行时给出，避免在向导里复制一份物理公式。若实车发现误接受（H 偏低 + 角度偏大），再考虑在向导内联高度检查。
+**仍开放的边界**：当前向导上限为 `[-5°, +14°]`，有效 ROI 上限仍随安装高度变化，具体拒绝由 learner 的 ROI 守卫运行时判定；向导不复制该高度相关公式。若实车发现误接受（H 偏低 + 角度偏大），再考虑在向导内联高度检查。
 
 ---
 
@@ -548,6 +568,16 @@ CameraCalibration.fromWizard(width, height, heightMeters, hfov, initialPitch);
 > **rev.5 状态**：P2-2、P2-4、P2-5、P2-6、P2-7、P2-9、P2-11 随 `8b733a0` / `c6c1b46` 一次性闭环。叠加此前已闭环的 P2-1、P2-3、P2-10，以及按宿主机制关闭的 P2-8，**本级别全部关闭**。
 >
 > 历史口径：rev.4 时为 8 组待处理（P2-2、P2-4、P2-5、P2-6 剩余、P2-7、P2-8、P2-9、P2-11）。
+
+历史 P2 编号保持原样用于追溯；当前工作区另有一组未提交的健壮性加固：
+
+- `AlertAudio` 高优先级播放会停止低优先级 SoundPool 流和 ToneGenerator，`stop()` 同时清理优先级锁。
+- `MainActivity` 对 LiteRT 运行时异常使用有界指数退避；车速链路要求 FINE，COARSE 不再被当作有效车速来源。
+- `UsbCameraSource` 覆盖 opening/stream watchdog、SurfaceTexture 单次释放、serial 身份和 MJPEG/YUYV 候选协商。
+- `LaneDepartureDetector` 使用跨帧位置连续性抑制同侧亮线竞争；`LeadVehicleMotionEstimator` 在 `LOST`/重获时清除速度历史。
+
+上述加固均未在本轮运行 Gradle、真机或实车验证，不能把静态契约测试统计当成通过证据。
+代理曾用 `javac + JUnit` 独立验证车道 12、运动 4、跟踪 19、USB 契约 5 个重点用例；Gradle 启动因环境 `Unable to establish loopback connection` 未完成。
 
 ### P2-1 `VehicleOverlayView` 重复且未使用的 import —— ✅ rev.3 已闭环
 
@@ -591,7 +621,8 @@ public synchronized void discardPending() {
 - 有匹配标定 → 装载
 - 无匹配且**存有 ID** → 判定换摄像头，失效旧标定
 - 无匹配且**无存储 ID** → 判定为"无法归属"，同样失效（见下方行为变更）
-- camera id 未知（如未选中设备）→ **不动当前状态**，避免瞬时断连误清
+- 摄像头已实际打开但没有稳定 serial → **清除当前米制标定并要求重新标定**；USB 地址、deviceName 和 VID/PID 都不作为持久身份
+- 尚未选中设备或页面刚停止时不会进入该回调，因此不会因瞬时断连误清
 
 **行为变更（已确认接受，`43161c0` 已留档）**：早期版本保存的、未记录 camera id 的标定会被失效一次，车辆需要重新标定一次。
 
@@ -677,13 +708,13 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 | --- | --- | --- |
 | 1 | `FCW_CONFIRM_MILLIS=400` 且"未参与判定" | 改为 200 且已参与，并写明"连续 3 个分析帧且跨度 ≥200 ms" |
 | 2 | "速度 ≥45 km/h 时普通提醒为 THW≤1.2 s 或 ≤8 m" | 改为 **15 km/h**，并补低速段与停车段行为 |
-| 3 | "9 个 JVM 测试类、约 75 个方法" | 改为 10 个测试类 + 当时的 73 个方法；rev.4 现值为 **10 类 / 81 个方法**（`6599789` 加 4 个守卫用例、`21679fa` 加 4 个拒绝分类用例） |
+| 3 | "9 个 JVM 测试类、约 75 个方法" | 历史版本曾同步为 10 类 / 81 方法；当前工作区已增至 **14 类 / 143 个 `@Test` 方法**，本轮未执行 |
 | 4 | "`USBMonitor.openDevice()` 原始控制块当前未保存" | 已改写 |
 | 5 | "LiteRT 连续 3 次异常…没有退避" | 已改写 |
 
 同时同步了性能基线（31 FPS 采集、推理计时口径）与新增的 ROI 守卫说明。
 
-> **rev.4 待跟进**：第 3 项在文档中记为"73 个测试方法"，现值 **81**。与 rev.3 时的情形相同——属文档写作时点早于用例补充，本次已在两份方案文档中同步为当前值。
+> **当前同步**：历史记录中的 81 是 rev.4/rev.5 时点；当前工作区静态扫描为 14 个测试类、143 个 `@Test` 方法，不能据此声称 Gradle 测试通过。
 
 ### 7.2 归因（历史记录）
 
@@ -693,27 +724,30 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 
 - 无 Android instrumented 测试
 - 无真实 NV21 车道帧测试（`LaneDepartureDetectorTest` 用合成图；`AdasSimulator` 直接注入可用 Observation，两者不能互证）
-- 无 UVC 热插拔、LiteRT 真模型、音频出声、Activity 重建测试
+- 无 Android instrumented UVC 热插拔、LiteRT 真模型、音频出声、Activity 重建测试；新增的 `UsbCameraSourceTest` 只验证纯 Java 的候选格式、serial 身份和 SurfaceTexture 返回契约
+- 新增的 `LaneDepartureDetectorTest` 与 `LeadVehicleMotionEstimatorTest` 覆盖同侧竞争、缺端点样本和 `LOST` 重获速度重置，但仍不能替代真实 NV21/道路遮挡验证
 - ~~无端到端延迟测量~~ —— **rev.6/rev.7 已补**：真机 `Age` 31 条 + 分段 `Split=` 11 条 + FCW 场景日志。管线处理 78.5 ms、排队 0、测量段 ≈180 ms、确认段 ≈400 ms、端到端 ≈580 ms
 - 无"低速蠕行 HMW 行为"与"目标切换冷却"的显式用例（原 P0-1、原 P1-4 的定性分歧即源于缺少这类把产品意图写进测试的用例）
 - **rev.3 新增**：`6599789` 为 ROI 守卫补了 4 个用例（`laneRoiGuardRejectsSteepPitchWhereTheFixedRoiLooksAtTheHood`、`vanishingWindowStaysInsideTheLaneRoiGuard`、`rejectsSamplesWhenTheConfiguredPitchPutsTheRoiOnTheHood`、`reachesCalibratedForATallVehicleWithinTheGuard`），把"窗口上限必须落在守卫内侧"固化为不变量
 - **rev.4 新增**：`21679fa` 为拒绝分类补了 4 个用例（`reportsGeometricRejectionsSoTheUiCanAskForReaiming`、`reportsVanishingPointOutOfRangeAsGeometricToo`、`drivingConditionRejectionsDoNotCountAsGeometric`、`resetClearsRejectionTracking`）
 - **rev.4 仍缺**：
-  - `MIN_ROI_FAR_DISTANCE_METERS = 4.0` 的来源是几何推导 + 经验值，**缺真实图像的守卫阈值验证**
+  - `MIN_ROI_FAR_DISTANCE_METERS = 3.5` 的来源是几何推导 + 经验值，**缺真实图像的守卫阈值验证**
   - 新增的几何拒绝提示在模拟中无法触发（所有场景固定 4.0° 标定）——向导虽已加俯仰角入口，但 `AdasSimulator` 仍用固定标定，故**该提示路径仍只能靠实车验证**
   - 向导的 `parsePitchDegrees` 范围校验属 Activity 私有逻辑，JVM 单测无法覆盖（依赖 `android.util.Log` 等 Android 类）
 
 ---
 
-## 8. 建议处理顺序（rev.7）
+## 8. 建议处理顺序（rev.7 历史 + 2026-09-18 工作区）
 
 **代码侧可立即处理的项已全部清零，且唯一剩下的 P0 经实测后判定为"不改代码"。**
+
+这句话仅描述 rev.7 历史基线。当前未提交工作区已针对同侧车道竞争、`LOST` 重获速度污染、LiteRT 运行时重启、USB 生命周期/协商、精确定位权限和报警音抢占加固；剩余工作是重新验证几何投影、运行验证与参数验收，不应再沿用“源码没有这些保护”的旧风险描述。
 
 | 序 | 项 | 阻塞于 | 说明 |
 | --- | --- | --- | --- |
 | 1 | ~~P0-1 降帧数收口~~ | — | **rev.6 实测后不采纳**：确认段实测 ≈400 ms（非 600 ms），降帧数只省 ≈133 ms，而确认强度无法在模拟中验证；余量仍有 ≈1.78 s |
 | 2 | ~~P0-1 替代方向：压缩单帧处理成本~~ | — | **rev.7 实测后降级**：管线仅 78.5 ms、排队为 0，车道检测增量很小，收益上限仅几十毫秒 |
-| 3 | 标定参数实车标定 | 真实车道帧 | `MIN_ROI_FAR_DISTANCE_METERS`、`MAX_CONVERGENCE_STD_DEV`、提示阈值 5 次 |
+| 3 | 标定参数实车标定 | 真实车道帧 | `MIN_ROI_FAR_DISTANCE_METERS`、`MAX_CONVERGENCE_MAD_DEGREES`、提示阈值 5 次 |
 | 4 | 若仍要降帧数 | 真实道路 FCW 误报率基线 | 先有误报基线，才能判断"确认强度换 133 ms"是否划算 |
 | 5 | 测量段精确分解（可选） | 无（可直接做） | 在 `processAdasFrame` 记录决策时刻的帧年龄并输出到心跳，去掉 250 ms 心跳相位造成的 108–322 ms 离散 |
 
@@ -735,7 +769,7 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 | 原 P0-4 模拟禁写盘 / 原 P1-1 锚点对齐 | rev.2 撤销（第 4.2.1、4.2.2 节） |
 | 原 P0-1 HMW 速段 / 原 P1-4 冷却语义 | 重定性为产品权衡（第 4.2.3、4.2.4 节） |
 
-> **rev.6 相比 rev.5**：P0-1 由"等实测"变为"实测完成、判定不改代码"。审查至此收敛：**代码侧无待办**，剩余 3 项分别需要真实车道帧（标定参数）、真实道路误报基线（若要降帧数）、以及一个可选的仪表精化。
+> **rev.6 相比 rev.5**：P0-1 由"等实测"变为"实测完成、判定不改代码"。在此历史结论之外，当前工作区还需验证本轮加固的真实设备行为；剩余参数项仍分别需要真实车道帧（标定参数）、真实道路误报基线（若要降帧数）和可选的仪表精化。
 
 ---
 
@@ -743,20 +777,25 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 
 **必须在目标设备完成**：
 1. ~~P0-1 延迟实测~~ —— **rev.7 已完成**：模拟得确认段 `Confirm=413 ms`；真机得 `Split=1+0+78ms`（n=11）与 `Age` 94–329 ms（n=31）。⚠️ 两点口径提醒：`Age` 在模拟中恒为 0（帧由 `AdasSimulator` 即时打时间戳）；`Age` 本身含 127 ms 均值的心跳相位，**判定延迟请用 `Split=`**
-2. **换摄像头后的标定失效行为**：用两台同分辨率 USB 摄像头交替接入，确认第二次接入时旧标定被失效并提示重新标定（`reloadCalibrationForCamera`）—— 对应 P2-4
-3. 破坏一个 `alerts/*.wav` 后启动，确认 UI 出现"报警音不可用"而不是仍显示 READY —— 对应 P2-2
-4. 长稳运行 30 min，记录分析率与漏报（车机常亮，无需专项息屏测试）—— 对应 P2-8 的关闭前提
-5. 1280×720 → 640×480 降级路径复测：叠加层车道已被门控，确认降级时不再出现错位车道、参考线正常提示 —— 对应已闭环 P1-2 的回归
-6. **USB 广播路径（条件性）**：仅当在未预授权的设备上使用、或应用转为正常分发时才需要——三条路径即首次授权 / 拒绝后重试 / 运行中热插拔 —— 对应 P1-2 的限定条件
+2. **本轮同侧车道竞争**：用真实 NV21 帧放入同侧更亮接缝/邻近标线，确认位置连续性不会在 ±0.07 窗口内被亮度反转；冷启动和连续丢线后的重锁也要记录
+3. **`LOST` 重获速度**：遮挡目标后重获同/新 ID，确认首个有效样本 closing speed 从 0 重新开始，不把遮挡间隔的距离跳变当成逼近
+4. **LiteRT 运行时异常**：注入模型调用异常，确认 5/10/20/40 s 退避、解释器释放和消费线程不会快速重启打满 CPU
+5. **定位权限**：仅授予 COARSE 时确认界面提示需要 FINE 且车速链路保持失效；授予 FINE 后再验证新鲜度、质量和加速度门控
+6. **音频抢占**：先播放低优先级 HMW/LDW，再触发 FCW/HMW_CRITICAL，确认旧 SoundPool 流和 ToneGenerator 立即停止
+7. **换摄像头后的标定失效行为**：用两台同分辨率 USB 摄像头交替接入，确认第二次接入时旧标定被失效并提示重新标定（`reloadCalibrationForCamera`）—— 对应 P2-4
+8. 破坏一个 `alerts/*.wav` 后启动，确认 UI 出现"报警音不可用"而不是仍显示 READY —— 对应 P2-2
+9. 长稳运行 30 min，记录分析率与漏报（车机常亮，无需专项息屏测试）—— 对应 P2-8 的关闭前提
+10. 逐一尝试 1280×720、640×480、1920×1080 和 YUYV 候选，记录 AAR 实际接受格式及 NV21 尺寸校验；确认降级时叠加层不绘制错位车道
+11. **USB 广播路径（条件性）**：仅当在未预授权的设备上使用、或应用转为正常分发时才需要——首次授权、拒绝后重试、运行中热插拔
 
 **必须在实车完成**：
-7. 标定收敛性验证：确认 +12.7° 上限可用、ROI 守卫不误拒正常安装 —— 对应已闭环 P0-2 的回归
-8. **在向导中填入已知安装角**（≥12° 触发陡角提示），确认保存后提示与后续行为一致 —— 对应已闭环 P1-3
-9. **几何拒绝提示验证**：支架俯仰调至 ≥15° 后行驶，确认标定栏切换为"安装角度超出可学习范围"（该路径在模拟中无法触发，见第 7.3 节）—— 对应 `21679fa`
-10. 真实 NV21 车道帧的 LDW 可用性（白天 / 夜间 / 逆光 / 雨雾）—— 对应已闭环 P1-1 的回归
-11. 已知距离静态场景的测距精度 —— 全链路基础
-12. **守卫阈值标定**：用真实车道帧核对"远带 4 m 之外车道线是否仍可稳定检出" —— 对应 P0-2 的开放项
-13. （可选，非缺陷）低速蠕行段 HMW 提醒曲线实测，确认"8 m 米数保底"在实车上的可接受度 —— 对应第 4.2.3 节
+ 12. 标定收敛性验证：确认 +12.7° 上限可用、ROI 守卫不误拒正常安装 —— 对应已闭环 P0-2 的回归
+ 13. **在向导中填入已知安装角**（≥14° 触发陡角提示），确认保存后提示与后续行为一致 —— 对应已闭环 P1-3
+ 14. **几何拒绝提示验证**：支架俯仰调至 ≥15° 后行驶，确认标定栏切换为"安装角度超出可学习范围"（该路径在模拟中无法触发，见第 7.3 节）—— 对应 `21679fa`
+ 15. 真实 NV21 车道帧的 LDW 可用性（白天 / 夜间 / 逆光 / 雨雾）—— 对应已闭环 P1-1 的回归
+ 16. 已知距离静态场景的测距精度 —— 全链路基础
+ 17. **守卫阈值标定**：用真实车道帧核对"远带 4 m 之外车道线是否仍可稳定检出" —— 对应 P0-2 的开放项
+ 18. （可选，非缺陷）低速蠕行段 HMW 提醒曲线实测，确认"8 m 米数保底"在实车上的可接受度 —— 对应第 4.2.3 节
 
 ---
 
@@ -797,21 +836,24 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 | `lastFrameNanos` 与队列同锁 | `UsbCameraSource:265-271` | 与 `invalidatePreview` 的 `discardPending()` 原子，避免旧 token 复活 |
 | 过期间隔立即重置分析态 | `MainActivity:192-204` | 750 ms 无观测即清状态，不沿用陈旧目标 |
 | 重放/乱序帧防护 | `LeadVehicleTracker:41-43` | `now <= latest.timestampNanos()` 直接返回上次快照 |
-| `detect()` 失败退避 | `MainActivity:180,185` | 失败置 5 s 退避，成功清零；避免模型损坏时高频重启 |
-| 消费线程重启前释放解释器 | `FrameConsumer:89-95` | `onStopped()` 回收后再 `launchWorker()` |
+| `detect()` 失败退避 | `MainActivity` | 初始化失败 5 s；运行时异常先关闭失败解释器，再按 5/10/20/40 s 有界指数退避，成功清零；避免模型损坏时高频重启 |
+| 消费线程重启前释放解释器 | `FrameConsumer` / `MainActivity` | worker 的 `onStopped()` 仍负责重启清理；推理异常路径会在退避前主动关闭当前解释器 |
 | `NaN` 不被当 0 使用 | 全链路 | 速度/距离/置信度无效统一静默，方向正确 |
 | **模拟帧写盘守卫** | `MainActivity:614` | `persistCalibration = !simulationFrame`，两条持久化路径（第 627、634 行）均已受控——rev.1 曾误判为缺陷，见第 4.2.1 节 |
-| **车道带中心与常量一致** | `LaneDepartureDetector:9,11` + `:44-52` | `Y_TOP=0.60` ↔ 上带 `[0.54,0.66]` 中心 0.6000；`Y_BOTTOM=0.78` ↔ 下带 `[0.72,0.84]` 中心 0.7800，完全自洽——rev.1 曾误判为偏差，见第 4.2.2 节 |
+| **车道带中心与常量一致** | `LaneDepartureDetector` | 当前 ROI 为 `[0.54,0.82]`，发布锚点仍为 `Y_TOP=0.60`、`Y_BOTTOM=0.78`；缺端点时由 0.24 跨度和样本数量门控处理 |
 | **低速段绝对距离保底** | `AdasDecisionEngine:161` | 无条件兜底 `distance <= 8 m`，1–15 km/h 全段有米数保护——rev.1 曾误判为断层，见第 4.2.3 节 |
 | **目标切换双重防重复** | `AdasDecisionEngine:311-315` | `dangerousFrames` / `dangerSinceMillis` 复位 + 冷却保留，共同防连续蜂鸣——rev.1 曾误判为缺陷，见第 4.2.4 节 |
 | **标定门控不变式** | `MainActivity:612,658` | `calibrationStatus == CALIBRATED ⇒ calibration != null`：该状态仅由 `loadStatus()`（内部含 null 检查）与 `step.status()`（learner 仅在返回非空收敛结果时置位）产生，故 `LaneObservation` 门控无需再判 null |
-| **窗口与守卫边界自洽** | `AutoCalibrationLearner:31,46` | 窗口上限 12.68° 落在守卫生效点 14.78°（H=1.25）内侧，无死区；已由 `vanishingWindowStaysInsideTheLaneRoiGuard` 固化为不变量 |
+| **窗口与守卫边界自洽** | `AutoCalibrationLearner` | VP 兼容窗口仍受 ROI 守卫约束；真实 widthSamples 主路径使用 implied pitch/MAD，实际阈值需实车验证 |
 | **守卫是物理判据而非角度上限** | `AutoCalibrationLearner:272-277` | 同为 20° 俯仰，H=1.25 被拒（远带 ROI 3.01 m < 4 m）而 H=2.0 通过（4.81 m）——按"ROI 是否还看得到路"判定，避免一刀切 |
-| **模拟场景的 LDW 例外** | `MainActivity:659` | 门控写作 `!simulationFrame && calibrationStatus != CALIBRATED`，模拟帧有意放行：`AdasSimulator` 的 LDW 场景需要注入合成车道，不这样写会让该场景永远不告警 |
+| **模拟场景的 LDW 例外** | `MainActivity` | 门控写作 `!simulationFrame && calibrationStatus != CALIBRATED`，模拟帧有意放行：`AdasSimulator` 的 LDW 场景需要注入合成车道，不这样写会让该场景永远不告警 |
 | **几何提示挂在两个前置状态** | `MainActivity:601-617` | `showAngleOutOfRangeHint()` 同时用于 `WIZARD_COMPLETED` 与 `CALIBRATING`——几何坏掉时 status 不会进入后者，只挂后者会让提示不可达（自审时修正过） |
 | **`resetSamples()` 不清拒绝计数** | `AutoCalibrationLearner:345-353` | 计数清零只在接受样本、驾驶条件拒绝、`reset()` 三处。`resetAnalysisState()` 走 `resetSamples()`，若在此清计数，间歇丢帧会让提示永远到不了阈值 |
 | **延迟仪表用采集时间戳** | `MainActivity:694-713` | `Age` 基于 `result.timestampNanos()`（UVC 采集时刻），因此覆盖采样节流 + 预处理 + 推理；`Confirm` 由 `[DANGER-START]` 边沿起算，目标切换与分析重置均重新武装，不会跨目标继承 |
+| **同侧亮线连续性门控** | `LaneDepartureDetector:307-417` | 热启动使用上一帧位置窗口与位置惩罚；亮度只作候选证据，仍需真实道路竞争验证 |
+| **LOST 重获速度清理** | `LeadVehicleMotionEstimator:19-75` | `LOST`/ID 变化/时间间隔异常时不沿用旧速度，下一有效帧从零开始估计 |
+| **USB 与音频加固** | `UsbCameraSource` / `AlertAudio` | SurfaceTexture 单次释放、opening/stream watchdog、serial 绑定、多格式候选；高优先级音频主动停止低优先级流 |
 
 ---
 
-*报告 rev.5，基于 Git HEAD `c6c1b46` 的静态审查结论。行号对应该提交内容。修订沿革：rev.1→rev.2 见第 2.1 节勘误，rev.2→rev.3 见第 0.2 节，rev.3→rev.4 见第 0.1 节，rev.4→rev.5 见第 0 节。*
+*报告主体保留 rev.1→rev.7 的历史审查记录；当前工作区同步截至 2026-09-18，未提交、未构建、未做设备或实车验证。历史行号只用于追溯，当前加固摘要以第 0.4 节和附录 B 为准。*

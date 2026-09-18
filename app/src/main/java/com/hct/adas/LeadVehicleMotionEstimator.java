@@ -21,9 +21,10 @@ public final class LeadVehicleMotionEstimator {
         if (snapshot == null || snapshot.detection() == null
                 || snapshot.state() != LeadVehicleTracker.State.TRACKING
                 || calibration == null || !calibration.isUsableFor(width, height)) {
-            if (snapshot != null && snapshot.state() != LeadVehicleTracker.State.LOST) {
-                reset();
-            }
+            // LOST does not carry a current bounding box. Keep no distance or timestamp across
+            // that gap: when a target reappears, the first valid frame must establish a fresh
+            // baseline instead of turning the stale-to-new box delta into a closing-speed spike.
+            reset();
             return new Measurement(snapshot == null ? 0L : snapshot.trackId(),
                     Double.NaN, 0.0, 0.0, false);
         }

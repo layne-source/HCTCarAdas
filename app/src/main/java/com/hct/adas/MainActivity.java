@@ -69,6 +69,7 @@ public final class MainActivity extends Activity {
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private volatile RuntimeException initializationFailure;
+    private volatile RuntimeException detectorFailure;
     private UsbCameraSource cameraSource;
     private TextureView previewView;
     private VehicleOverlayView overlayView;
@@ -132,7 +133,8 @@ public final class MainActivity extends Activity {
     private long previousProcessedTimestampNanos;
     private final Handler metricsHandler = new Handler(Looper.getMainLooper());
     private record SimulationSnapshot(CameraCalibration calibration,
-                                      CalibrationStore.Status status) { }
+                                      CalibrationStore.Status status,
+                                      String cameraId) { }
     private final Runnable metricsUpdater = new Runnable() {
         @Override
         public void run() {
@@ -200,6 +202,7 @@ public final class MainActivity extends Activity {
         frameConsumer = new FrameConsumer(frameDispatcher, new FrameConsumer.Handler() {
             private VehicleDetector detector;
             private long nextDetectorRetryNanos;
+            private int detectorFailureStreak;
 
             @Override
             public void onFrame(FrameDispatcher.Frame frame) {
@@ -227,7 +230,33 @@ public final class MainActivity extends Activity {
                         throw initializationFailure;
                     }
                 }
-                VehicleDetector.Result result = detector.detect(frame);
+                VehicleDetector.Result result;
+                try {
+                    result = detector.detect(frame);
+                } catch (RuntimeException | LinkageError failure) {
+                    // Runtime failures are different from a bad model asset: close this interpreter
+                    // before retrying, and keep any worker restart behind an exponential backoff
+                    // instead of recreating a broken interpreter in a tight loop.
+                    if (detector != null) {
+                        try {
+                            detector.close();
+                        } catch (RuntimeException | LinkageError closeFailure) {
+                            Log.w(TAG, "Vehicle detector cleanup failed after inference error",
+                                    closeFailure);
+                        } finally {
+                            detector = null;
+                        }
+                    }
+                    detectorFailureStreak = Math.min(6, detectorFailureStreak + 1);
+                    detectorFailure = new IllegalStateException("模型推理失败: "
+                            + failure.getMessage(), failure);
+                    long delayNanos = 5_000_000_000L
+                            << Math.min(3, detectorFailureStreak - 1);
+                    nextDetectorRetryNanos = System.nanoTime() + delayNanos;
+                    throw new IllegalStateException("Vehicle inference failed", failure);
+                }
+                detectorFailureStreak = 0;
+                detectorFailure = null;
                 nextDetectorRetryNanos = 0L;
                 // Keep inference outside the lock; transitions and the short analysis stage
                 synchronized (MainActivity.this) {
@@ -278,7 +307,7 @@ public final class MainActivity extends Activity {
                     public void onDeviceConnectionChanged(UsbDevice device, boolean connected) {
                         updateCameraStatus(getString(connected ? R.string.camera_opened
                                 : R.string.camera_disconnected), !connected);
-                        if (connected) {
+                        if (connected && simulationSnapshot == null) {
                             // Rebind the calibration to the camera that actually opened: the same
                             // 1280x720 geometry from a different sensor would otherwise be inherited.
                             reloadCalibrationForCamera();
@@ -348,13 +377,18 @@ public final class MainActivity extends Activity {
                 updateCameraStatus(getString(R.string.camera_permission_required), false);
             }
         } else if (requestCode == LOCATION_PERMISSION_REQUEST && started) {
-            startLocationUpdates();
+            if (hasFineLocationPermission()) {
+                startLocationUpdates();
+            } else {
+                egoSpeedKmh = Double.NaN;
+                speedTimestampNanos = 0L;
+                statusView.setText("需要精确定位权限，车速相关功能已暂停");
+            }
         }
     }
 
     private void ensureLocationPermission() {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED) {
+        if (hasFineLocationPermission()) {
             startLocationUpdates();
         } else if (!locationPermissionAsked) {
             locationPermissionAsked = true;
@@ -452,7 +486,8 @@ public final class MainActivity extends Activity {
         boolean fresh = result != null && (simulator.isRunning()
                 || (result.timestampNanos() >= acceptFramesAfterNanos
                 && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
-        RuntimeException modelFailure = initializationFailure;
+        RuntimeException modelFailure = initializationFailure != null
+                ? initializationFailure : detectorFailure;
         String workerError = modelFailure == null ? worker.lastError() : modelFailure.getMessage();
         if (!simulator.isRunning() && !workerError.isEmpty()) {
             metricsView.setText(stream + "\n" + workerError);
@@ -632,8 +667,7 @@ public final class MainActivity extends Activity {
     private synchronized void startLocationUpdates() {
         egoSpeedKmh = Double.NaN;
         speedTimestampNanos = 0L;
-        if (locationManager == null || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
+        if (locationManager == null || !hasFineLocationPermission()) {
             return;
         }
         try {
@@ -666,6 +700,11 @@ public final class MainActivity extends Activity {
             Log.w(TAG, "GPS speed unavailable", failure);
             egoSpeedKmh = Double.NaN;
         }
+    }
+
+    private boolean hasFineLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private synchronized void stopLocationUpdates() {
@@ -1058,7 +1097,8 @@ public final class MainActivity extends Activity {
         int height = analysis == null ? 720 : analysis.detections().frameHeight();
 
         if (simulationSnapshot == null) {
-            simulationSnapshot = new SimulationSnapshot(calibration, calibrationStatus);
+            simulationSnapshot = new SimulationSnapshot(calibration, calibrationStatus,
+                    cameraSource == null ? "" : cameraSource.currentCameraId());
         }
         // Synthetic boxes use this fixture, independent of the real camera's saved calibration.
         calibration = CameraCalibration.fromWizard(width, height, HEIGHT_SEDAN_METERS, 90.0,
@@ -1098,13 +1138,37 @@ public final class MainActivity extends Activity {
         if (snapshot == null) {
             return;
         }
-        calibration = snapshot.calibration();
-        calibrationStatus = snapshot.status();
-        autoCalibrationLearner.reset(calibrationStatus);
-        calibrationProgress = autoCalibrationLearner.progress();
         simulationSnapshot = null;
+        String currentCameraId = cameraSource == null ? "" : cameraSource.currentCameraId();
+        boolean sameCamera = !snapshot.cameraId().isEmpty()
+                && snapshot.cameraId().equals(currentCameraId);
+        if (sameCamera) {
+            calibration = snapshot.calibration();
+            calibrationStatus = snapshot.status();
+            autoCalibrationLearner.reset(calibrationStatus);
+            calibrationProgress = autoCalibrationLearner.progress();
+            calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
+        } else {
+            // Never restore a simulation's pre-existing calibration to another or unidentified
+            // camera. A stable camera may load only its own persisted record; an unidentified camera
+            // stays uncalibrated and drops stale storage.
+            calibration = null;
+            calibrationStatus = CalibrationStore.Status.UNCONFIGURED;
+            calibrationProgress = 0;
+            autoCalibrationLearner.reset(calibrationStatus);
+            if (currentCameraId.isEmpty()) {
+                calibrationStore.clear();
+            } else {
+                CameraCalibration stored = calibrationStore.load(currentCameraId);
+                if (stored != null) {
+                    calibration = stored;
+                    calibrationStatus = calibrationStore.loadStatus();
+                    calibrationProgress = calibrationStore.loadProgress();
+                    autoCalibrationLearner.reset(calibrationStatus);
+                }
+            }
+        }
         clearResults();
-        calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
         overlayView.setCalibration(calibration, calibrationStatus);
         statusView.setText(cameraStatusText == null
                 ? getString(R.string.app_bootstrap_status) : cameraStatusText);
@@ -1306,12 +1370,17 @@ public final class MainActivity extends Activity {
      * treated as unbound and dropped rather than adopted: keeping it would silently apply one
      * camera's pitch to another. This project is still in its test phase, so the resulting one-off
      * re-calibration on upgrade is accepted instead of migrating the old record; see
-     * {@code CalibrationStore} for that note. When no camera id is known yet the current state is
-     * left untouched, because that says nothing about whether the calibration belongs to this camera.
+     * {@code CalibrationStore} for that note. A connected camera without a stable serial is also
+     * fail-closed: its metric calibration is cleared because the next attachment could be a
+     * different identical UVC device.
      */
     private synchronized void reloadCalibrationForCamera() {
         String currentId = cameraSource == null ? "" : cameraSource.currentCameraId();
         if (currentId.isEmpty()) {
+            if (calibration != null || calibrationStatus != CalibrationStore.Status.UNCONFIGURED) {
+                Log.w(TAG, "[CALIB] Camera has no stable serial; invalidating metric calibration");
+                applyCameraCalibration(null);
+            }
             return;
         }
         CameraCalibration stored = calibrationStore.load(currentId);

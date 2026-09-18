@@ -182,6 +182,14 @@ public final class AlertAudio implements AutoCloseable {
             return false;
         }
 
+        if (priority > activePriority) {
+            // A higher-severity event must own the speaker immediately. Priority gating alone only
+            // blocks future low-priority requests; already-playing SoundPool streams would otherwise
+            // continue underneath FCW/HMW_CRITICAL.
+            stopPlayingStreams();
+            stopTone();
+        }
+
         boolean played = playSound(sound, fallbackTone, durationMillis);
         if (played) {
             activePriority = priority;
@@ -200,7 +208,12 @@ public final class AlertAudio implements AutoCloseable {
                 if (stream != 0) {
                     // SoundPool supports at most four concurrent streams; bound our stop handles too.
                     if (playingStreams.size() == 4) {
-                        playingStreams.removeFirst();
+                        int oldest = playingStreams.removeFirst();
+                        try {
+                            soundPool.stop(oldest);
+                        } catch (RuntimeException failure) {
+                            Log.w(TAG, "Cannot stop oldest alert stream", failure);
+                        }
                     }
                     playingStreams.addLast(stream);
                     playbackFailed = false;
@@ -225,6 +238,13 @@ public final class AlertAudio implements AutoCloseable {
     }
 
     public synchronized void stop() {
+        stopPlayingStreams();
+        stopTone();
+        activePriority = 0;
+        priorityLockUntilNanos = 0L;
+    }
+
+    private void stopPlayingStreams() {
         while (!playingStreams.isEmpty()) {
             int stream = playingStreams.removeFirst();
             try {
@@ -235,6 +255,9 @@ public final class AlertAudio implements AutoCloseable {
                 Log.w(TAG, "Cannot stop alert stream", failure);
             }
         }
+    }
+
+    private void stopTone() {
         try {
             if (toneGenerator != null) {
                 toneGenerator.stopTone();
