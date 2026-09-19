@@ -6,6 +6,7 @@ import android.app.AlertDialog;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.graphics.Matrix;
+import android.graphics.drawable.ColorDrawable;
 import android.hardware.usb.UsbDevice;
 import android.location.Location;
 import android.location.LocationListener;
@@ -16,34 +17,35 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.TextureView;
-import android.widget.TextView;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.text.InputType;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.EditText;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
-import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Set;
 
-/** Foreground vehicle detection/tracking; calibrated warnings are a later stage. */
+/** Foreground vehicle detection/tracking for the lightweight front-vehicle ADAS profile. */
 public final class MainActivity extends Activity {
     private static final String TAG = "HctAdasCore";
     private static final int CAMERA_PERMISSION_REQUEST = 10;
     private static final int LOCATION_PERMISSION_REQUEST = 11;
-    /**
-     * Fallback installation pitch when the bracket angle is unknown. A windshield-inside mount just
-     * below the factory forward camera typically looks 6-10 degrees down at the road ahead; starting at
-     * 4 degrees would leave every drive drifting in from too shallow an angle. The learner confirms the
-     * value once lane markings are seen and reports the deviation the installer has to correct.
-     */
+    private static final DateTimeFormatter CLOCK_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss", Locale.ROOT);
+    /** Fallback installation pitch for a typical windshield-inside camera mount. */
     private static final double INITIAL_PITCH_DEGREES = 8.0;
-    private static final long LANE_SNAPSHOT_HOLD_MILLIS = 1_200L;
     /**
      * Camera height above ground for the presets the wizard offers. These describe where the lens sits
      * for a windshield-inside mount just below the factory forward camera, which is the installation
@@ -53,19 +55,15 @@ public final class MainActivity extends Activity {
     private static final double HEIGHT_SUV_METERS = 1.55;
     private static final double HEIGHT_TRUCK_METERS = 2.00;
     /**
-     * Bounds accepted by the wizard. The upper bound mirrors the lane ROI guard at the target mounting
-     * height (~14.4 deg): accepting a steeper angle would store a calibration whose every frame is then
-     * rejected for looking at the hood instead of the road.
+     * Supported customer-facing installation range; values are selected, not free-typed. The upper
+     * bound mirrors the lane ROI guard at the target mounting height (~14.4 deg): accepting a steeper
+     * angle would store a calibration whose every frame is then rejected for looking at the hood.
      */
-    private static final double MIN_INITIAL_PITCH_DEGREES = -5.0;
+    private static final double MIN_INITIAL_PITCH_DEGREES = 2.0;
     private static final double MAX_INITIAL_PITCH_DEGREES = 14.0;
-    /**
-     * Pitch at which the wizard warns that the mounting angle is near the limit the lane sampling band
-     * can still see: at 1.3 m of mounting height the ROI's far row drops under its minimum ground
-     * distance at about 14.4 degrees. Deliberately derived from the ROI guard rather than from a
-     * hand-picked number, which is what produced the earlier false "angle out of range" reports.
-     */
-    private static final double STEEP_PITCH_WARNING_DEGREES = 14.0;
+    private static final double PITCH_STEP_DEGREES = 0.5;
+    private static final int PITCH_STEPS = (int) Math.round(
+            (MAX_INITIAL_PITCH_DEGREES - MIN_INITIAL_PITCH_DEGREES) / PITCH_STEP_DEGREES);
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private volatile RuntimeException initializationFailure;
@@ -75,8 +73,14 @@ public final class MainActivity extends Activity {
     private VehicleOverlayView overlayView;
     private TextView statusView;
     private CharSequence cameraStatusText;
-    private TextView metricsView;
-    private TextView calibrationView;
+    private TextView clockView;
+    private TextView speedView;
+    private View setupPromptView;
+    private TextView setupPromptTitleView;
+    private TextView setupPromptDetailView;
+    private View speedPanel;
+    private View settingsButton;
+    private int baseBottomHudMarginPx;
     private CalibrationStore calibrationStore;
     private volatile CameraCalibration calibration;
     private final AutoCalibrationLearner autoCalibrationLearner = new AutoCalibrationLearner();
@@ -97,6 +101,7 @@ public final class MainActivity extends Activity {
     private volatile long speedTimestampNanos;
     private boolean permissionAsked;
     private boolean locationPermissionAsked;
+    private boolean locationPermissionDenied;
     private volatile boolean started;
     private volatile long acceptFramesAfterNanos;
     private volatile long resultsGeneration;
@@ -149,10 +154,17 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        hideSystemStatusBar();
         View content = findViewById(R.id.adas_content);
         statusView = findViewById(R.id.status);
-        metricsView = findViewById(R.id.metrics);
-        calibrationView = findViewById(R.id.calibration);
+        clockView = findViewById(R.id.clock);
+        speedView = findViewById(R.id.speed_value);
+        setupPromptView = findViewById(R.id.setup_prompt);
+        setupPromptTitleView = findViewById(R.id.setup_prompt_title);
+        setupPromptDetailView = findViewById(R.id.setup_prompt_detail);
+        speedPanel = findViewById(R.id.speed_panel);
+        settingsButton = findViewById(R.id.settings_button);
+        baseBottomHudMarginPx = ((ViewGroup.MarginLayoutParams) speedPanel.getLayoutParams()).bottomMargin;
         simulationButton = findViewById(R.id.simulation_button);
         if (!BuildConfig.DEBUG) {
             simulationButton.setVisibility(View.GONE);
@@ -166,6 +178,7 @@ public final class MainActivity extends Activity {
             Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
             int bottom = Math.max(navBars.bottom, systemBars.bottom);
             overlayView.setBottomInset(bottom);
+            applyBottomHudInset(bottom);
             return insets;
         });
         content.requestApplyInsets();
@@ -182,7 +195,6 @@ public final class MainActivity extends Activity {
             calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
         }
         overlayView.setCalibration(calibration, calibrationStatus);
-        calibrationView.setOnClickListener(view -> showCalibrationDialog());
         simulationButton.setOnClickListener(view -> showSimulationDialog());
         locationManager = getSystemService(LocationManager.class);
         try {
@@ -277,9 +289,12 @@ public final class MainActivity extends Activity {
                             > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
                         resetAnalysisState();
                     }
-                    LaneDepartureDetector.Observation lane = laneDetector.detect(
-                            frame.nv21(), frame.width(), frame.height());
-                    logLaneSampling(lane);
+                    LaneDepartureDetector.Observation lane = AdasCalibrationMode.LDW_ENABLED
+                            ? laneDetector.detect(frame.nv21(), frame.width(), frame.height())
+                            : LaneDepartureDetector.Observation.UNAVAILABLE;
+                    if (AdasCalibrationMode.LDW_ENABLED) {
+                        logLaneSampling(lane);
+                    }
                     double speed = validSpeedKmh() ? egoSpeedKmh : Double.NaN;
                     processAdasFrame(result, lane, speed, learningPitchDegrees(result.frameWidth(),
                             result.frameHeight()), frameGeneration, sessionStart, false);
@@ -318,7 +333,7 @@ public final class MainActivity extends Activity {
                     }
 
                     public void onError(String message) {
-                        updateCameraStatus(message + "\n点击此处重试", true);
+                        updateCameraStatus(message + " · 点击重试", true);
                     }
                 });
         previewView.addOnLayoutChangeListener((view, l, t, r, b, oldL, oldT, oldR, oldB) -> {
@@ -338,7 +353,50 @@ public final class MainActivity extends Activity {
         if (resetResults) {
             clearResults();
         }
+        setStatusText(text, true);
+    }
+
+    private void setStatusText(CharSequence text, boolean hideWhenCameraReady) {
         statusView.setText(text);
+        boolean hide = hideWhenCameraReady
+                && getString(R.string.camera_opened).contentEquals(text);
+        statusView.setVisibility(hide ? View.GONE : View.VISIBLE);
+    }
+
+    /** Keeps every persistent bottom HUD element above gesture and three-button navigation bars. */
+    private void applyBottomHudInset(int insetPx) {
+        int bottomMargin = baseBottomHudMarginPx + Math.max(0, insetPx);
+        setBottomMargin(speedPanel, bottomMargin);
+        setBottomMargin(settingsButton, bottomMargin);
+    }
+
+    private static void setBottomMargin(View view, int bottomMargin) {
+        if (view == null) {
+            return;
+        }
+        ViewGroup.MarginLayoutParams params =
+                (ViewGroup.MarginLayoutParams) view.getLayoutParams();
+        if (params.bottomMargin != bottomMargin) {
+            params.bottomMargin = bottomMargin;
+            view.setLayoutParams(params);
+        }
+    }
+
+    private void hideSystemStatusBar() {
+        WindowInsetsController controller = getWindow().getInsetsController();
+        if (controller != null) {
+            controller.hide(WindowInsets.Type.statusBars());
+            controller.setSystemBarsBehavior(
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            hideSystemStatusBar();
+        }
     }
 
     @Override
@@ -378,11 +436,15 @@ public final class MainActivity extends Activity {
             }
         } else if (requestCode == LOCATION_PERMISSION_REQUEST && started) {
             if (hasFineLocationPermission()) {
+                locationPermissionDenied = false;
                 startLocationUpdates();
+                setStatusText(cameraStatusText == null
+                        ? getString(R.string.camera_opened) : cameraStatusText, true);
             } else {
+                locationPermissionDenied = true;
                 egoSpeedKmh = Double.NaN;
                 speedTimestampNanos = 0L;
-                statusView.setText("需要精确定位权限，车速相关功能已暂停");
+                setStatusText("需要精确定位权限，车速相关功能已暂停", false);
             }
         }
     }
@@ -397,9 +459,13 @@ public final class MainActivity extends Activity {
         }
     }
 
-    /** One calibration line per second while the pitch is being learned, independent of the sample count. */
+    /** Diagnostic calibration heartbeat; the lightweight profile has no online lane-learning phase. */
     private void logCalibrationHeartbeat() {
+        if (!AdasCalibrationMode.LDW_ENABLED) {
+            return;
+        }
         if (calibrationStatus == CalibrationStore.Status.CALIBRATED
+                || calibrationStatus == CalibrationStore.Status.DISTANCE_READY
                 || calibrationStatus == CalibrationStore.Status.UNCONFIGURED) {
             return;
         }
@@ -464,23 +530,12 @@ public final class MainActivity extends Activity {
                     speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
             logCalibrationHeartbeat();
         }
-        double fps = (captured - previousCaptured) * 1_000_000_000.0
-                / Math.max(1L, now - previousMetricsTime);
         previousCaptured = captured;
         previousMetricsTime = now;
-        FrameDispatcher.Metrics queue = frameDispatcher.metrics();
-        FrameConsumer.Metrics worker = workerSnapshot;
-        String stream = getString(R.string.stream_metrics, fps, queue.offeredFrames(),
-                worker.processedFrames(), queue.droppedFrames(), queue.discardedFrames(),
-                worker.failedFrames() + cameraSource.invalidFrames());
-        AlertAudio.Status audioStatus = alertAudio == null ? AlertAudio.Status.UNAVAILABLE : alertAudio.status();
-        stream += switch (audioStatus) {
-            case READY -> "";
-            case LOADING -> "\n报警音正在加载";
-            case UNAVAILABLE -> "\n报警音不可用，请检查车机音频通道";
-            case MUTED -> "\n媒体音量已静音，声音预警不可用";
-        };
+        AlertAudio.Status audioStatus = alertAudio == null
+                ? AlertAudio.Status.UNAVAILABLE : alertAudio.status();
         Analysis analysis = latestAnalysis;
+        updateClockAndSpeed(analysis);
         VehicleDetector.Result result = analysis == null ? null : analysis.detections();
         updateCalibrationStatus(result);
         boolean fresh = result != null && (simulator.isRunning()
@@ -488,31 +543,64 @@ public final class MainActivity extends Activity {
                 && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
         RuntimeException modelFailure = initializationFailure != null
                 ? initializationFailure : detectorFailure;
-        String workerError = modelFailure == null ? worker.lastError() : modelFailure.getMessage();
+        String workerError = modelFailure == null
+                ? workerSnapshot.lastError() : modelFailure.getMessage();
         if (!simulator.isRunning() && !workerError.isEmpty()) {
-            metricsView.setText(stream + "\n" + workerError);
+            updateRuntimeStatus("前车检测暂不可用");
             overlayView.setResult(null, null);
         } else if (fresh) {
             fitPreview(result);
             AdasDecisionEngine.Decision shown = displayDecision(analysis, now);
             overlayView.setResult(result, analysis.tracking(), analysis.lane(),
                     analysis.laneGeometry(), shown, analysis.motion().visible(),
-                    Double.isFinite(displaySpeedKmh(analysis)));
-            metricsView.setText(stream + "\n" + getString(R.string.detection_metrics,
-                    result.vehicles().size(), result.inferenceNanos() / 1_000_000.0)
-                    + "\n" + trackingStatus(analysis.tracking())
-                    + "\n" + measurementStatus(analysis, now));
+                    Double.isFinite(displaySpeedKmh(analysis)), analysis.motion());
+            updateRuntimeStatus(audioStatusText(audioStatus));
         } else {
             overlayView.setResult(null, null);
             if (result != null && result.timestampNanos() >= acceptFramesAfterNanos) {
-                metricsView.setText(stream + "\n" + getString(R.string.detection_metrics,
-                        result.vehicles().size(), result.inferenceNanos() / 1_000_000.0)
-                        + "\n" + getString(R.string.stale_detection_result));
+                updateRuntimeStatus(getString(R.string.stale_detection_result));
             } else {
-                metricsView.setText(stream + "\n" + getString(R.string.waiting_for_frames));
+                updateRuntimeStatus(getString(R.string.waiting_for_frames));
             }
         }
     }
+
+    private void updateRuntimeStatus(String runtimeStatus) {
+        if (simulator.isRunning()) {
+            return;
+        }
+        CharSequence cameraStatus = cameraStatusText == null
+                ? getString(R.string.app_bootstrap_status) : cameraStatusText;
+        if (!getString(R.string.camera_opened).contentEquals(cameraStatus)) {
+            setStatusText(cameraStatus, false);
+        } else if (runtimeStatus == null || runtimeStatus.isEmpty()) {
+            if (locationPermissionDenied) {
+                setStatusText("需要精确定位权限，车速相关功能已暂停", false);
+            } else {
+                setStatusText(cameraStatus, true);
+            }
+        } else {
+            setStatusText(runtimeStatus, false);
+        }
+    }
+
+    private static String audioStatusText(AlertAudio.Status status) {
+        return switch (status) {
+            case READY, LOADING -> null;
+            case UNAVAILABLE -> "报警音不可用，请检查车机音频通道";
+            case MUTED -> "媒体音量已静音，声音预警不可用";
+        };
+    }
+
+    private void updateClockAndSpeed(Analysis analysis) {
+        clockView.setText(LocalDateTime.now().format(CLOCK_FORMAT));
+        double speed = analysis == null
+                ? (validSpeedKmh() ? egoSpeedKmh : Double.NaN)
+                : displaySpeedKmh(analysis);
+        speedView.setText(Double.isFinite(speed)
+                ? String.format(Locale.ROOT, "%.0f", speed) : "--");
+    }
+
 
     /**
      * Millisecond parts of the end-to-end measurement leg for the newest processed frame: how long
@@ -553,97 +641,9 @@ public final class MainActivity extends Activity {
         return (toNanos - fromNanos) / 1_000_000L;
     }
 
-    private String trackingStatus(LeadVehicleTracker.Snapshot tracking) {
-        return switch (tracking.state()) {
-            case NONE -> getString(R.string.tracking_none);
-            case CANDIDATE -> getString(R.string.tracking_candidate);
-            case TRACKING -> getString(R.string.tracking_active, tracking.trackId());
-            case LOST -> getString(R.string.tracking_lost, tracking.trackId());
-        };
-    }
-
-    private String measurementStatus(Analysis analysis, long now) {
-        LeadVehicleMotionEstimator.Measurement motion = analysis.motion();
-        double speed = displaySpeedKmh(analysis);
-        String lane = analysis.lane().available()
-                ? (!Double.isFinite(speed) ? "车道已识别，LDW等待有效车速"
-                : displayDecision(analysis, now).laneWarning() ? "车道注意" : "车道已识别") : "车道不可用";
-        String speedText = Double.isFinite(speed)
-                ? String.format(Locale.ROOT, "车速 %.0f km/h", speed)
-                : "车速 -- (GPS无效或过期)";
-        if (!motion.visible()) {
-            String availability = calibrationStatus == CalibrationStore.Status.CALIBRATED
-                    ? getString(R.string.measurement_unavailable)
-                    : getString(R.string.measurement_calibration_pending);
-            return availability + " · " + speedText + " · " + lane;
-        }
-        double ttc = motion.closingSpeedMps() > 0.0
-                ? motion.distanceMeters() / motion.closingSpeedMps() : Double.NaN;
-        String distance = String.format(Locale.ROOT, "%.1f m", motion.distanceMeters());
-        String ttcText = Double.isFinite(ttc)
-                ? String.format(Locale.ROOT, "%.1f s", ttc) : "--";
-        AdasDecisionEngine.Decision shown = displayDecision(analysis, now);
-        String warning = shown.events().isEmpty()
-                ? (shown.headwayWarning() ? "HMW 条件" : "无预警")
-                : "事件: " + shown.events();
-        String laneWarning = shown.laneWarning() ? " · LDW 条件" : "";
-        return getString(R.string.measurement_status, distance, ttcText,
-                speedText + " · " + warning + laneWarning + " · " + lane)
-                + " · " + composeReadouts(analysis, shown) + " · " + getString(R.string.estimated_note);
-    }
-
     private double displaySpeedKmh(Analysis analysis) {
         return simulator.isRunning() ? analysis.speedKmh()
                 : validSpeedKmh() && Double.isFinite(analysis.speedKmh()) ? egoSpeedKmh : Double.NaN;
-    }
-    /**
-     * The three driver-facing readouts (FCWS, LDWS, LKAS) as fixed-width lines so the values line up
-     * while the text changes length. Wording and colours come from {@link AdasUiStatusMapper}; no
-     * decision threshold is evaluated here.
-     */
-    private String composeReadouts(Analysis analysis, AdasDecisionEngine.Decision shown) {
-        double ttc = Double.NaN;
-        double distance = Double.NaN;
-        boolean targetVisible = false;
-        if (analysis != null && analysis.motion() != null && analysis.motion().visible()) {
-            targetVisible = true;
-            distance = analysis.motion().distanceMeters();
-            if (analysis.motion().closingSpeedMps() > 0.0) {
-                ttc = distance / analysis.motion().closingSpeedMps();
-            }
-        }
-        double speed = analysis == null ? Double.NaN : displaySpeedKmh(analysis);
-        AdasUiStatusMapper.Status status = AdasUiStatusMapper.forward(shown, targetVisible,
-                ttc, distance, speed, shown.headwayWarning());
-        LaneGeometry.LaneSnapshot lane = analysis == null ? null : analysis.laneGeometry();
-        if (lane != null && (lane.timestampNanos() <= 0L
-                || System.currentTimeMillis() - lane.timestampNanos() > LANE_SNAPSHOT_HOLD_MILLIS)) {
-            lane = null;
-        }
-        boolean laneSupported = calibrationStatus == CalibrationStore.Status.CALIBRATED
-                || simulator.isRunning();
-        AdasUiStatusMapper.LaneStatus laneStatus = AdasUiStatusMapper.lane(lane, laneSupported,
-                shown.laneWarning());
-        return "\nFCWS " + status.riskText() + " (" + status.detail() + ")"
-                + "\nLDWS " + laneStatus.departure() + AdasUiStatusMapper.laneDetail(lane)
-                + "\nLKAS " + laneStatus.keeping();
-    }
-
-    /** Risk band of the current decision, used for the colour of the overlay text. */
-    private int riskColor(AdasDecisionEngine.Decision decision, Analysis analysis) {
-        double ttc = Double.NaN;
-        double distance = Double.NaN;
-        boolean targetVisible = false;
-        if (analysis != null && analysis.motion() != null && analysis.motion().visible()) {
-            targetVisible = true;
-            distance = analysis.motion().distanceMeters();
-            if (analysis.motion().closingSpeedMps() > 0.0) {
-                ttc = distance / analysis.motion().closingSpeedMps();
-            }
-        }
-        return AdasUiStatusMapper.forward(decision, targetVisible, ttc, distance,
-                analysis == null ? Double.NaN : displaySpeedKmh(analysis),
-                decision.headwayWarning()).riskColor();
     }
 
     private AdasDecisionEngine.Decision displayDecision(Analysis analysis, long now) {
@@ -762,99 +762,27 @@ public final class MainActivity extends Activity {
     };
 
     private void updateCalibrationStatus(VehicleDetector.Result result) {
-        if (calibration == null || calibrationStatus == CalibrationStore.Status.UNCONFIGURED) {
-            calibrationView.setText(R.string.calibration_unset);
-            calibrationView.setTextColor(0xFFFFD180);
-        } else if (result != null && !calibration.isUsableFor(result.frameWidth(), result.frameHeight())) {
-            calibrationView.setText(getString(R.string.calibration_size_mismatch,
-                    calibration.imageWidth(), calibration.imageHeight()));
-            calibrationView.setTextColor(0xFFFF8A80);
-        } else if (calibrationStatus == CalibrationStore.Status.WIZARD_COMPLETED) {
-            if (showAngleOutOfRangeHint() || showLaneObservationHint()) {
-                return;
-            }
-            calibrationView.setText(getString(R.string.calibration_wizard_done,
-                    calibration.cameraHeightMeters()) + calibrationProgressDetail());
-            calibrationView.setTextColor(0xFF80DEEA);
-        } else if (calibrationStatus == CalibrationStore.Status.CALIBRATING) {
-            if (showAngleOutOfRangeHint() || showLaneObservationHint()) {
-                return;
-            }
-            calibrationView.setText(getString(R.string.calibration_in_progress,
-                    calibrationProgress) + calibrationProgressDetail());
-            calibrationView.setTextColor(0xFF80DEEA);
-        } else if (calibrationStatus == CalibrationStore.Status.CALIBRATED) {
-            calibrationView.setText(getString(R.string.calibration_loaded,
-                    calibration.imageWidth(), calibration.imageHeight(),
-                    calibration.cameraHeightMeters(), calibration.pitchDegrees()));
-            calibrationView.setTextColor(0xFFA5D6A7);
+        boolean distanceProfileReady = calibrationStatus == CalibrationStore.Status.DISTANCE_READY
+                || calibrationStatus == CalibrationStore.Status.WIZARD_COMPLETED
+                || calibrationStatus == CalibrationStore.Status.CALIBRATED;
+        boolean setupRequired = calibration == null || !distanceProfileReady;
+        boolean sizeMismatch = !setupRequired && result != null
+                && !calibration.isUsableFor(result.frameWidth(), result.frameHeight());
+        if (setupRequired) {
+            showSetupPrompt("需要完成安装设置",
+                    "设置车辆类型、镜头视野和安装俯仰角后启用距离预警");
+        } else if (sizeMismatch) {
+            showSetupPrompt("摄像头配置已变化",
+                    "当前分辨率与已保存配置不一致，请重新完成安装设置");
+        } else {
+            setupPromptView.setVisibility(View.GONE);
         }
     }
 
-    /**
-     * A sustained run of geometric rejections cannot be waited out: the configured pitch keeps the
-     * lane ROI off the road, so the learner never even leaves the wizard state. Both pre-learning
-     * states must surface that, otherwise the user is told to keep driving forever.
-     *
-     * <p>Only a genuinely collapsed ROI may raise this hint. A lane observation that merely cannot be
-     * solved is a different failure and is reported separately, because telling the user to re-aim a
-     * correctly mounted camera is worse than saying nothing.
-     */
-    private boolean showAngleOutOfRangeHint() {
-        if (autoCalibrationLearner.consecutiveGeometricRejections()
-                < AutoCalibrationLearner.GEOMETRIC_REJECTION_HINT_THRESHOLD) {
-            return false;
-        }
-        calibrationView.setText(R.string.calibration_angle_out_of_range);
-        calibrationView.setTextColor(0xFFFF8A80);
-        return true;
-    }
-
-    /**
-     * Explains why an observation was dropped without asking the user to touch the mounting angle,
-     * except when the solved pitch disagrees with the configured one by more than the tolerance.
-     */
-    private boolean showLaneObservationHint() {
-        AutoCalibrationLearner.Rejection rejection = autoCalibrationLearner.lastRejection();
-        if (rejection == AutoCalibrationLearner.Rejection.OBSERVATION_INCOHERENT) {
-            double solved = autoCalibrationLearner.lastSolvedPitchDegrees();
-            CameraCalibration active = calibration;
-            if (Double.isFinite(solved) && active != null
-                    && Math.abs(solved - active.pitchDegrees())
-                    > AutoCalibrationLearner.MAX_PITCH_DEVIATION_DEGREES) {
-                calibrationView.setText(getString(R.string.calibration_reaim,
-                        solved - active.pitchDegrees(), solved));
-                calibrationView.setTextColor(0xFFFF8A80);
-                return true;
-            }
-            calibrationView.setText(R.string.calibration_observation_inconsistent);
-            calibrationView.setTextColor(0xFFFFD180);
-            return true;
-        }
-        if (rejection == AutoCalibrationLearner.Rejection.DRIVING_CONDITION) {
-            calibrationView.setText(R.string.calibration_waiting_conditions);
-            calibrationView.setTextColor(0xFF80DEEA);
-            return true;
-        }
-        return false;
-    }
-
-    /** Compact progress line: window fill plus the measured/model lane width ratio. */
-    private String calibrationProgressDetail() {
-        StringBuilder builder = new StringBuilder();
-        double measured = autoCalibrationLearner.lastMeasuredRatio();
-        double model = autoCalibrationLearner.lastModelRatio();
-        if (Double.isFinite(measured)) {
-            builder.append(String.format(Locale.ROOT, " · 车道宽比 %.2f", measured));
-            if (Double.isFinite(model)) {
-                builder.append(String.format(Locale.ROOT, " (模型 %.2f)", model));
-            }
-        }
-        double solved = autoCalibrationLearner.lastSolvedPitchDegrees();
-        if (Double.isFinite(solved)) {
-            builder.append(String.format(Locale.ROOT, " · 解算俯仰 %.2f°", solved));
-        }
-        return builder.toString();
+    private void showSetupPrompt(String title, String detail) {
+        setupPromptTitleView.setText(title);
+        setupPromptDetailView.setText(detail);
+        setupPromptView.setVisibility(View.VISIBLE);
     }
 
     /** Configured pitch is available to the learner before calibration has converged. */
@@ -898,11 +826,11 @@ public final class MainActivity extends Activity {
         }
         previousProcessedTimestampNanos = result.timestampNanos();
         LeadVehicleTracker.Snapshot tracking = tracker.update(result, lane);
-        CameraCalibration activeCalib = calibrationStatus == CalibrationStore.Status.CALIBRATED
-                ? calibration : null;
+        CameraCalibration activeCalib = AdasCalibrationMode.distanceReady(calibrationStatus,
+                calibration, result.frameWidth(), result.frameHeight()) ? calibration : null;
         boolean persistCalibration = !simulationFrame;
         CameraCalibration learningCalibration = calibration;
-        if (learningCalibration != null
+        if (AdasCalibrationMode.LDW_ENABLED && learningCalibration != null
                 && (!simulationFrame || simulator.currentScenario() == AdasSimulator.Scenario.AUTO_CALIBRATION)
                 && learningCalibration.isUsableFor(result.frameWidth(), result.frameHeight())) {
             AutoCalibrationLearner.StepResult step = autoCalibrationLearner.update(
@@ -954,10 +882,11 @@ public final class MainActivity extends Activity {
         double laneOffsetFraction = laneGeometry.centerOffsetLaneFraction();
         boolean currentMetricLane = lane != null && lane.available() && lane.hasWidthSamples();
         AdasDecisionEngine.LaneObservation laneObservation =
-                (!simulationFrame && calibrationStatus != CalibrationStore.Status.CALIBRATED)
+                (!AdasCalibrationMode.LDW_ENABLED
+                        || (!simulationFrame && calibrationStatus != CalibrationStore.Status.CALIBRATED))
                         ? new AdasDecisionEngine.LaneObservation(0.0, 0.0, false)
                         : new AdasDecisionEngine.LaneObservation(laneOffsetFraction,
-                                lane.confidence(), currentMetricLane && Double.isFinite(laneOffsetFraction));
+                        lane.confidence(), currentMetricLane && Double.isFinite(laneOffsetFraction));
         AdasDecisionEngine.Decision decision = decisionEngine.update(observation, laneObservation);
         // Latency instrumentation only: age is measured against the capture timestamp, so it covers
         // sampling throttle plus preprocessing and inference for this decision.
@@ -1006,6 +935,9 @@ public final class MainActivity extends Activity {
      */
     private LaneGeometry.LaneSnapshot laneSnapshot(LaneDepartureDetector.Observation lane,
                                                    int frameWidth, int frameHeight) {
+        if (!AdasCalibrationMode.LDW_ENABLED) {
+            return LaneGeometry.LaneSnapshot.INVALID;
+        }
         if (lane == null || !lane.available() || lane.widthSamples().isEmpty()) {
             return heldLaneGeometry;
         }
@@ -1048,25 +980,39 @@ public final class MainActivity extends Activity {
             simulator.stop();
             restoreSimulationState();
             simulationButton.setText("室内模拟测试");
-            simulationButton.setBackgroundColor(0xB30D47A1);
+            simulationButton.setBackgroundResource(R.drawable.hud_debug_button);
+            simulationButton.setTextColor(0xFF80D8FF);
             Toast.makeText(this, "已停止模拟测试，恢复正常监测", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        String[] scenarioNames = {
+        String[] scenarioNames = AdasCalibrationMode.LDW_ENABLED
+                ? new String[] {
                 "🔊 扬声器发声测试 (测试车机喇叭通路)",
                 "1. FCW 紧急碰撞测试 (60km/h 高速前车急刹/逼近)",
                 "2. HMW 极近车距测试 (25km/h 跟车贴近至 3.5m 报警)",
                 "3. LDW 车道偏离测试 (65km/h 车辆压线偏离报警)",
                 "4. LVSA 前车起步测试 (红灯静止等候 / 前车起步驶离)",
                 "5. 行车自标定收敛测试 (自动学习灭点 0% -> 100%)"
+        }
+                : new String[] {
+                "🔊 扬声器发声测试 (测试车机喇叭通路)",
+                "1. FCW 紧急碰撞测试 (60km/h 高速前车急刹/逼近)",
+                "2. HMW 极近车距测试 (25km/h 跟车贴近至 3.5m 报警)",
+                "3. LVSA 前车起步测试 (红灯静止等候 / 前车起步驶离)"
         };
-        AdasSimulator.Scenario[] scenarios = {
+        AdasSimulator.Scenario[] scenarios = AdasCalibrationMode.LDW_ENABLED
+                ? new AdasSimulator.Scenario[] {
                 AdasSimulator.Scenario.FCW_APPROACH,
                 AdasSimulator.Scenario.HMW_PROXIMITY,
                 AdasSimulator.Scenario.LDW_DEPARTURE,
                 AdasSimulator.Scenario.LVSA_START,
                 AdasSimulator.Scenario.AUTO_CALIBRATION
+        }
+                : new AdasSimulator.Scenario[] {
+                AdasSimulator.Scenario.FCW_APPROACH,
+                AdasSimulator.Scenario.HMW_PROXIMITY,
+                AdasSimulator.Scenario.LVSA_START
         };
 
         new AlertDialog.Builder(this)
@@ -1111,12 +1057,13 @@ public final class MainActivity extends Activity {
         overlayView.setCalibration(calibration, calibrationStatus);
 
         simulationButton.setText("模拟中 (点击停止)");
-        simulationButton.setBackgroundColor(0xFFC62828);
+        simulationButton.setBackgroundResource(R.drawable.hud_debug_active);
+        simulationButton.setTextColor(0xFFFFE6E8);
 
         simulator.start(scenario, width, height, calibration, new AdasSimulator.Listener() {
             @Override
             public void onFrame(AdasSimulator.SimFrame simFrame) {
-                statusView.setText("【室内模拟】" + simFrame.description());
+                setStatusText("【室内模拟】" + simFrame.description(), false);
                 processAdasFrame(simFrame.detections(), simFrame.lane(), simFrame.speedKmh(),
                         learningPitchDegrees(simFrame.detections().frameWidth(),
                                 simFrame.detections().frameHeight()),
@@ -1127,7 +1074,8 @@ public final class MainActivity extends Activity {
             public void onFinished(AdasSimulator.Scenario finished) {
                 restoreSimulationState();
                 simulationButton.setText("室内模拟测试");
-                simulationButton.setBackgroundColor(0xB30D47A1);
+                simulationButton.setBackgroundResource(R.drawable.hud_debug_button);
+                simulationButton.setTextColor(0xFF80D8FF);
                 Toast.makeText(MainActivity.this, "模拟完成: " + finished.displayName(), Toast.LENGTH_SHORT).show();
             }
         });
@@ -1170,91 +1118,57 @@ public final class MainActivity extends Activity {
         }
         clearResults();
         overlayView.setCalibration(calibration, calibrationStatus);
-        statusView.setText(cameraStatusText == null
-                ? getString(R.string.app_bootstrap_status) : cameraStatusText);
+        setStatusText(cameraStatusText == null
+                ? getString(R.string.app_bootstrap_status) : cameraStatusText, true);
     }
+    /** XML click handler for the compact settings entry in the driver HUD. */
+    public void openCalibrationFromSettings(View view) {
+        showCalibrationDialog();
+    }
+
     private void showCalibrationDialog() {
         if (simulator.isRunning()) {
-            Toast.makeText(this, "请先停止模拟再修改标定", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "请先停止模拟再修改安装配置", Toast.LENGTH_SHORT).show();
             return;
         }
         Analysis analysis = latestAnalysis;
         int width = analysis == null ? 1280 : analysis.detections().frameWidth();
         int height = analysis == null ? 720 : analysis.detections().frameHeight();
 
-        LinearLayout form = new LinearLayout(this);
-        form.setOrientation(LinearLayout.VERTICAL);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
-        form.setPadding(padding, padding / 2, padding, padding / 2);
-
-        TextView vehicleLabel = new TextView(this);
-        vehicleLabel.setText("1. 安装位置（镜头镜片离地高度）:");
-        vehicleLabel.setTextSize(14f);
-        vehicleLabel.setTextColor(0xFFFFFFFF);
-        form.addView(vehicleLabel);
-
-        RadioGroup vehicleGroup = new RadioGroup(this);
-        vehicleGroup.setOrientation(RadioGroup.HORIZONTAL);
-        RadioButton rbSedan = new RadioButton(this);
-        rbSedan.setText("轿车 1.30m");
-        RadioButton rbSuv = new RadioButton(this);
-        rbSuv.setText("SUV 1.55m");
-        RadioButton rbTruck = new RadioButton(this);
-        rbTruck.setText("货车 2.00m");
-        RadioButton rbCustom = new RadioButton(this);
-        rbCustom.setText("自定义");
-        vehicleGroup.addView(rbSedan);
-        vehicleGroup.addView(rbSuv);
-        vehicleGroup.addView(rbTruck);
-        vehicleGroup.addView(rbCustom);
-        form.addView(vehicleGroup);
-
-        EditText customHeightField = numberField("镜头镜片到地面的垂直距离(米，如 1.35)");
-        customHeightField.setVisibility(View.GONE);
-        form.addView(customHeightField);
+        View content = getLayoutInflater().inflate(R.layout.dialog_install_wizard, null);
+        RadioGroup vehicleGroup = content.findViewById(R.id.vehicle_group);
+        RadioButton rbSedan = content.findViewById(R.id.rb_sedan);
+        RadioButton rbSuv = content.findViewById(R.id.rb_suv);
+        RadioButton rbTruck = content.findViewById(R.id.rb_truck);
+        RadioButton rbCustom = content.findViewById(R.id.rb_custom);
+        EditText customHeightField = content.findViewById(R.id.custom_height_field);
+        RadioGroup fovGroup = content.findViewById(R.id.fov_group);
+        RadioButton rb90 = content.findViewById(R.id.rb_fov_90);
+        RadioButton rb100 = content.findViewById(R.id.rb_fov_100);
+        RadioButton rb120 = content.findViewById(R.id.rb_fov_120);
+        SeekBar pitchSeekBar = content.findViewById(R.id.pitch_seekbar);
+        TextView pitchValue = content.findViewById(R.id.pitch_value);
+        TextView resolutionValue = content.findViewById(R.id.resolution_value);
+        TextView cameraIdValue = content.findViewById(R.id.camera_id_value);
 
         rbSedan.setChecked(true);
         if (calibration != null) {
-            double h = calibration.cameraHeightMeters();
-            if (Math.abs(h - HEIGHT_SEDAN_METERS) < 0.05) {
+            double cameraHeight = calibration.cameraHeightMeters();
+            if (Math.abs(cameraHeight - HEIGHT_SEDAN_METERS) < 0.05) {
                 rbSedan.setChecked(true);
-            } else if (Math.abs(h - HEIGHT_SUV_METERS) < 0.05) {
+            } else if (Math.abs(cameraHeight - HEIGHT_SUV_METERS) < 0.05) {
                 rbSuv.setChecked(true);
-            } else if (Math.abs(h - HEIGHT_TRUCK_METERS) < 0.05) {
+            } else if (Math.abs(cameraHeight - HEIGHT_TRUCK_METERS) < 0.05) {
                 rbTruck.setChecked(true);
             } else {
                 rbCustom.setChecked(true);
                 customHeightField.setVisibility(View.VISIBLE);
-                customHeightField.setText(Double.toString(h));
+                customHeightField.setText(Double.toString(cameraHeight));
             }
         }
-        TextView heightNote = new TextView(this);
-        heightNote.setText("• 挡风玻璃内侧、原车前视摄像头下方：轿车约 1.30m，SUV 约 1.55m，货车约 2.00m\n"
-                + "• 高度只影响距离尺度，粗选即可：偏 0.2m 约带来 16% 的距离偏差");
-        heightNote.setTextSize(12f);
-        heightNote.setTextColor(0xFFB0BEC5);
-        form.addView(heightNote);
-        vehicleGroup.setOnCheckedChangeListener((group, checkedId) -> {
-            customHeightField.setVisibility(checkedId == rbCustom.getId() ? View.VISIBLE : View.GONE);
-        });
+        vehicleGroup.setOnCheckedChangeListener((group, checkedId) ->
+                customHeightField.setVisibility(checkedId == R.id.rb_custom ? View.VISIBLE : View.GONE));
 
-        TextView lensLabel = new TextView(this);
-        lensLabel.setText("\n2. 摄像头水平视场角 (HFOV):");
-        lensLabel.setTextSize(14f);
-        lensLabel.setTextColor(0xFFFFFFFF);
-        form.addView(lensLabel);
-
-        RadioGroup fovGroup = new RadioGroup(this);
-        fovGroup.setOrientation(RadioGroup.HORIZONTAL);
-        RadioButton rb90 = new RadioButton(this);
-        rb90.setText("标准 90° (推荐)");
-        RadioButton rb100 = new RadioButton(this);
-        rb100.setText("广角 100°");
-        RadioButton rb120 = new RadioButton(this);
-        rb120.setText("超广角 120°");
-        fovGroup.addView(rb90);
-        fovGroup.addView(rb100);
-        fovGroup.addView(rb120);
         rb90.setChecked(true);
         if (calibration != null && calibration.isUsableFor(width, height)) {
             double currentFov = Math.toDegrees(2.0 * Math.atan(
@@ -1266,99 +1180,107 @@ public final class MainActivity extends Activity {
                 rb100.setChecked(true);
             }
         }
-        form.addView(fovGroup);
 
-        TextView fovNote = new TextView(this);
-        fovNote.setText("• 查镜头规格书；查不到先用 90°\n"
-                + "• 填错的后果：车道宽读数会长期偏大（HFOV 填小了）或偏小（填大了），据此回改");
-        fovNote.setTextSize(12f);
-        fovNote.setTextColor(0xFFB0BEC5);
-        form.addView(fovNote);
-
-        TextView pitchLabel = new TextView(this);
-        pitchLabel.setText("\n3. 初始俯仰角 (度，向下为正):");
-        pitchLabel.setTextSize(14f);
-        pitchLabel.setTextColor(0xFFFFFFFF);
-        form.addView(pitchLabel);
-
-        EditText pitchField = numberField("默认 8.0（挡风玻璃内侧安装的典型值）");
         double pitchToShow = calibration != null && calibration.isUsableFor(width, height)
                 ? calibration.pitchDegrees() : INITIAL_PITCH_DEGREES;
-        pitchField.setText(Double.toString(pitchToShow));
-        form.addView(pitchField);
+        pitchSeekBar.setProgress(pitchProgress(pitchToShow));
+        pitchValue.setText(formatPitchDegrees(pitchDegrees(pitchSeekBar.getProgress())));
+        pitchSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                pitchValue.setText(formatPitchDegrees(pitchDegrees(progress)));
+            }
 
-        TextView pitchNote = new TextView(this);
-        pitchNote.setText("• 知道支架角度就直接填；不知道保持 8.0 即可\n"
-                + "• 上路后本机会用车道线测出实际角度，若偏差超过 ±4° 会提示你调多少度");
-        pitchNote.setTextSize(12f);
-        pitchNote.setTextColor(0xFFB0BEC5);
-        form.addView(pitchNote);
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
 
-        TextView guideNote = new TextView(this);
-        guideNote.setText("\n4. 物理对准提示:\n• 调整镜头使车头机盖露出在屏幕下方参考线处\n"
-                + "• 确保道路远方处于中间黄色地平线附近\n"
-                + "• 拧紧支架螺丝保存后，上路行驶几分钟即可完成验证");
-        guideNote.setTextSize(12f);
-        guideNote.setTextColor(0xFFB0BEC5);
-        form.addView(guideNote);
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
 
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.addView(form);
+        String cameraId = cameraSource == null ? "" : cameraSource.currentCameraId();
+        resolutionValue.setText("当前画面：" + width + " × " + height);
+        cameraIdValue.setText("摄像头序列号："
+                + (cameraId.isEmpty() ? "未识别（需支持序列号的 USB 摄像头）" : cameraId));
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle("ADAS 摄像头安装向导（" + width + "×" + height + "）")
-                .setView(scrollView)
+                .setView(content)
                 .setNegativeButton("取消", null)
-                .setPositiveButton("保存并开始验证", (dialog, which) -> {
-                    try {
-                        double heightMeters;
-                        if (rbCustom.isChecked()) {
-                            heightMeters = parse(customHeightField);
-                        } else if (rbSuv.isChecked()) {
-                            heightMeters = HEIGHT_SUV_METERS;
-                        } else if (rbTruck.isChecked()) {
-                            heightMeters = HEIGHT_TRUCK_METERS;
-                        } else {
-                            heightMeters = HEIGHT_SEDAN_METERS;
-                        }
-
-                        double hfov = rb120.isChecked() ? 120.0 : (rb100.isChecked() ? 100.0 : 90.0);
-                        double initialPitch = parsePitchDegrees(pitchField);
-
-                        CameraCalibration next = CameraCalibration.fromWizard(
-                                width, height, heightMeters, hfov, initialPitch);
-
-                        applyCameraCalibration(next);
-                        Toast.makeText(this, initialPitch >= STEEP_PITCH_WARNING_DEGREES
-                                ? "向导配置已保存！俯仰角偏大，若标定栏提示需调整角度请按提示微调支架"
-                                : "向导配置已保存！请上路以 >35km/h 在本车道居中行驶几分钟完成验证",
-                                Toast.LENGTH_LONG).show();
-                    } catch (RuntimeException failure) {
-                        Toast.makeText(this, "参数错误: " + failure.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                });
-
+                .setPositiveButton("保存并启用", null);
         if (calibrationStatus != CalibrationStore.Status.UNCONFIGURED) {
-            builder.setNeutralButton("重置标定", (dialog, which) -> {
+            builder.setNeutralButton("重置配置", (dialog, which) -> {
                 applyCameraCalibration(null);
-                Toast.makeText(this, "已重置标定参数", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "已清除安装配置", Toast.LENGTH_SHORT).show();
             });
         }
-        builder.show();
+
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(ignored -> {
+            Window window = dialog.getWindow();
+            if (window != null) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                window.setBackgroundDrawable(new ColorDrawable(0x00000000));
+                int screenWidth = getResources().getDisplayMetrics().widthPixels;
+                int maxWidth = (int) (720 * getResources().getDisplayMetrics().density);
+                window.setLayout(Math.min(maxWidth, (int) (screenWidth * 0.94f)),
+                        WindowManager.LayoutParams.WRAP_CONTENT);
+            }
+            Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            positive.setTextColor(0xFF65D6C5);
+            positive.setOnClickListener(view -> {
+                try {
+                    double heightMeters;
+                    if (rbCustom.isChecked()) {
+                        heightMeters = parse(customHeightField);
+                    } else if (rbSuv.isChecked()) {
+                        heightMeters = HEIGHT_SUV_METERS;
+                    } else if (rbTruck.isChecked()) {
+                        heightMeters = HEIGHT_TRUCK_METERS;
+                    } else {
+                        heightMeters = HEIGHT_SEDAN_METERS;
+                    }
+                    double hfov = rb120.isChecked() ? 120.0 : (rb100.isChecked() ? 100.0 : 90.0);
+                    double initialPitch = pitchDegrees(pitchSeekBar.getProgress());
+                    CameraCalibration next = CameraCalibration.fromWizard(
+                            width, height, heightMeters, hfov, initialPitch);
+                     String activeCameraId = cameraSource == null ? "" : cameraSource.currentCameraId();
+                     if (activeCameraId.isEmpty()) {
+                         throw new IllegalStateException(
+                                 "摄像头没有可用序列号，请连接支持序列号的 USB 摄像头后重试");
+                     }
+                    applyCameraCalibration(next);
+                    dialog.dismiss();
+                    Toast.makeText(this, "安装配置已保存，前车距离预警已启用",
+                            Toast.LENGTH_LONG).show();
+                } catch (RuntimeException failure) {
+                    Toast.makeText(this, "请检查配置：" + failure.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+            Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+            negative.setTextColor(0xFF9AA5B1);
+            Button neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (neutral != null) {
+                neutral.setTextColor(0xFFFF8A80);
+            }
+        });
+        dialog.show();
     }
 
     private synchronized void applyCameraCalibration(CameraCalibration next) {
         calibration = next;
         calibrationStatus = next == null ? CalibrationStore.Status.UNCONFIGURED
-                : CalibrationStore.Status.WIZARD_COMPLETED;
-        calibrationProgress = 0;
+                : CalibrationStore.Status.DISTANCE_READY;
+        calibrationProgress = next == null ? 0 : 100;
         autoCalibrationLearner.reset(calibrationStatus);
         clearResults();
         String currentId = cameraSource != null ? cameraSource.currentCameraId() : "";
         if (next == null) {
             calibrationStore.clear();
         } else {
-            calibrationStore.save(next, calibrationStatus, 0, currentId);
+            calibrationStore.save(next, calibrationStatus, calibrationProgress, currentId);
         }
         overlayView.setCalibration(calibration, calibrationStatus);
         updateCalibrationStatus(null);
@@ -1405,15 +1327,6 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private EditText numberField(String hint) {
-        EditText field = new EditText(this);
-        field.setHint(hint);
-        field.setSingleLine(true);
-        field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL
-                | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        return field;
-    }
-
     private static double parse(EditText field) {
         String value = field.getText().toString().trim();
         if (value.isEmpty()) {
@@ -1422,22 +1335,22 @@ public final class MainActivity extends Activity {
         return Double.parseDouble(value);
     }
 
-    /**
-     * Validates the wizard's pitch input. The accepted range mirrors the learner's pitch bounds;
-     * a value outside them could never be reached by self-learning either, so storing it would only
-     * produce a calibration the pipeline refuses to use. Whether the resulting pitch actually keeps
-     * the lane ROI on the road is judged afterwards by the learner's ROI guard, which surfaces the
-     * "安装角度超出可学习范围" hint once it rejects repeatedly.
-     */
-    private double parsePitchDegrees(EditText field) {
-        double value = parse(field);
-        if (!Double.isFinite(value) || value < MIN_INITIAL_PITCH_DEGREES
-                || value > MAX_INITIAL_PITCH_DEGREES) {
-            throw new IllegalArgumentException(String.format(Locale.ROOT,
-                    "初始俯仰角须在 %.0f ~ %.0f 度之间", MIN_INITIAL_PITCH_DEGREES,
-                    MAX_INITIAL_PITCH_DEGREES));
+    private static int pitchProgress(double pitchDegrees) {
+        if (!Double.isFinite(pitchDegrees)) {
+            pitchDegrees = INITIAL_PITCH_DEGREES;
         }
-        return value;
+        double clamped = Math.max(MIN_INITIAL_PITCH_DEGREES,
+                Math.min(MAX_INITIAL_PITCH_DEGREES, pitchDegrees));
+        return (int) Math.round((clamped - MIN_INITIAL_PITCH_DEGREES) / PITCH_STEP_DEGREES);
+    }
+
+    private static double pitchDegrees(int progress) {
+        int safeProgress = Math.max(0, Math.min(PITCH_STEPS, progress));
+        return MIN_INITIAL_PITCH_DEGREES + safeProgress * PITCH_STEP_DEGREES;
+    }
+
+    private static String formatPitchDegrees(double pitchDegrees) {
+        return String.format(Locale.ROOT, "%.1f°", pitchDegrees);
     }
 
     /**

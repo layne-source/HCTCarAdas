@@ -7,24 +7,6 @@
     <string name="camera_permission_required">需要相机权限才能访问 USB 视频设备；点击此处重新授权</string>
     <string name="waiting_for_frames">等待有效视频帧</string>
     <string name="stale_detection_result">检测结果已过期，请检查帧流和分析耗时</string>
-    <string name="stream_metrics">采集 %1$.1f fps · 输入 %2$d · 消费 %3$d · 丢帧 %4$d · 作废 %5$d · 异常 %6$d</string>
-    <string name="detection_metrics">车辆 %1$d · 单帧分析 %2$.0f ms</string>
-    <string name="tracking_none">搜索区内暂无前方候选</string>
     <string name="tracking_candidate">候选确认中</string>
-    <string name="tracking_active">前方候选 #%1$d · 跟踪中</string>
-    <string name="tracking_lost">前方候选 #%1$d · 暂时丢失</string>
     <string name="tracking_box_label">前方候选 #%1$d</string>
-    <string name="calibration_unset">未设置标定（点击启动安装向导）</string>
-    <string name="calibration_wizard_done">向导已完成 · 测距预警未启用，等待车道验证（车速需 >35km/h）[H:%1$.2fm]</string>
-    <string name="calibration_in_progress">标定验证中 %1$d%% · 测距预警未启用，请保持直行</string>
-    <string name="calibration_angle_out_of_range">车道采样区看不到路面（采样带已落到车头附近）· 请调整摄像头俯仰后重试</string>
-    <string name="calibration_waiting_conditions">等待验证条件：车速 &gt;35km/h 且保持在车道中央</string>
-    <string name="calibration_observation_inconsistent">车道观测与标定参数不一致 · 请保持直行、走在本车道内</string>
-    <string name="calibration_reaim">镜头俯仰需 %1$+.1f°（建议值 %2$.1f°）· 请小幅调整支架角度后重试</string>
-    <string name="calibration_loaded">已标定 %1$d×%2$d [H:%3$.2fm · 俯仰:%4$.1f°]（点击修改）</string>
-    <string name="calibration_size_mismatch">标定绑定 %1$d×%2$d，当前画面尺寸不一致</string>
-    <string name="measurement_unavailable">距离不可用（未标定、目标丢失或几何无效）</string>
-    <string name="measurement_calibration_pending">距离预警未启用（标定尚未收敛）</string>
-    <string name="measurement_status">距离 %1$s · TTC %2$s · %3$s</string>
-    <string name="estimated_note">数值为视觉估计</string>
 </resources>

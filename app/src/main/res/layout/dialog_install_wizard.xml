@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/wizard_scroll"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/wizard_surface"
+    android:fillViewport="true"
+    android:overScrollMode="never">
+
+    <LinearLayout
+        android:id="@+id/wizard_form"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="20dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.18"
+            android:text="INSTALLATION SETUP"
+            android:textColor="#FF65D6C5"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/wizard_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:text="摄像头安装向导"
+            android:textColor="#FFF5F7FA"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/wizard_subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="完成安装配置后，立即启用前车距离预警"
+            android:textColor="#FF9AA5B1"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/wizard_step"
+                android:gravity="center"
+                android:text="01 车辆"
+                android:textColor="#FF65D6C5"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/wizard_step"
+                android:gravity="center"
+                android:text="02 镜头"
+                android:textColor="#FFB8C4CC"
+                android:textSize="11sp" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/wizard_step"
+                android:gravity="center"
+                android:text="03 角度"
+                android:textColor="#FFB8C4CC"
+                android:textSize="11sp" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/wizard_step"
+                android:gravity="center"
+                android:text="04 启用"
+                android:textColor="#FFB8C4CC"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/wizard_section"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="车辆高度"
+                android:textColor="#FFF5F7FA"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="选择最接近的安装高度，用于把画面尺度换算成米"
+                android:textColor="#FF9AA5B1"
+                android:textSize="12sp" />
+
+            <RadioGroup
+                android:id="@+id/vehicle_group"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rb_sedan"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="轿车&#10;1.30 m"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_suv"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="SUV&#10;1.55 m"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_truck"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="货车&#10;2.00 m"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_custom"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="自定义"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+            </RadioGroup>
+
+            <EditText
+                android:id="@+id/custom_height_field"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="镜头离地高度（米，如 1.35）"
+                android:inputType="numberDecimal|numberSigned"
+                android:maxLines="1"
+                android:textColor="#FFF5F7FA"
+                android:textColorHint="#FF7F8B96"
+                android:visibility="gone" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="粗选即可；高度误差会按比例影响距离读数"
+                android:textColor="#FF7F8B96"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/wizard_section"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="镜头视野"
+                android:textColor="#FFF5F7FA"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="按镜头规格书选择 HFOV；不确定时先用 90°"
+                android:textColor="#FF9AA5B1"
+                android:textSize="12sp" />
+
+            <RadioGroup
+                android:id="@+id/fov_group"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rb_fov_90"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="90°&#10;标准"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_fov_100"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="100°&#10;广角"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rb_fov_120"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="120°&#10;超广角"
+                    android:textColor="#FFE5EBEF"
+                    android:textSize="12sp" />
+            </RadioGroup>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/wizard_section"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="安装俯仰角"
+                    android:textColor="#FFF5F7FA"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/pitch_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="8.0°"
+                    android:textColor="#FF65D6C5"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="镜头向下为正；推荐从 8.0° 开始，视野应包含前方路面"
+                android:textColor="#FF9AA5B1"
+                android:textSize="12sp" />
+
+            <SeekBar
+                android:id="@+id/pitch_seekbar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:max="24"
+                android:minHeight="48dp"
+                android:progress="12" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="镜头略抬"
+                    android:textColor="#FF7F8B96"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="标准安装"
+                    android:textColor="#FF65D6C5"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="end"
+                    android:text="镜头略低"
+                    android:textColor="#FF7F8B96"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/wizard_section"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="设备绑定"
+                android:textColor="#FFF5F7FA"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/resolution_value"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="当前画面：1280 × 720"
+                android:textColor="#FFD8E1E6"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/camera_id_value"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:ellipsize="middle"
+                android:maxLines="1"
+                android:text="摄像头序列号：未识别"
+                android:textColor="#FFD8E1E6"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/enabled_features"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="保存后启用：前车距离 · FCW · HMW · LVSA"
+                android:textColor="#FF65D6C5"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

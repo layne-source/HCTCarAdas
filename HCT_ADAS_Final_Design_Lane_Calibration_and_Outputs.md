@@ -5,6 +5,8 @@
 > 本文是当前 V1 轻量车道与标定实现的基线；V2 双模型和 ByteTrack 模块已移除。
 > 设备与实车验证仍未完成；所有阈值都是待实车确认的工程初值。
 
+> **当前落地边界（2026-09-19）：** 为避免实车自动车道标定长期停在 0/60 或少量样本，当前版本关闭 LDW 运行分支和车道叠加显示。安装向导完成后，距离能力直接进入 `DISTANCE_READY`；前车距离、FCW、HMW、LVSA 仍按本文的目标跟踪与规则链路运行。车道章节保留作后续升级设计，不作为本版验收条件。
+
 ## 1. 最终决策摘要
 
 | 决策项 | 结论 | 理由 |
@@ -14,7 +16,7 @@
 | 采样帧率 | **不提升**（保持约 5 FPS 分析） | 单帧 86 ms 已实测，双模型将超出预算 |
 | 标定判据 | **车道宽度近/远比值为观测量 + 配置角为持久化值** | 见第 3 节；该比值与车道宽先验、相机高度、焦距都无关 |
 | 用户操作 | **静态向导给初值 + 提示微调 + 跑一段验证** | 与消费级后装一致；不要求用户对准地平线 |
-| 数值输出 | Offset 与 R 均输出，标注为视觉估计 | 本项目输出比成熟后装更严（它们不出数值） |
+| 当前驾驶员 UI | 正常运行显示时间、车速、设置入口；前车距离跟随真实目标框显示；告警以目标标签和报警音表达 | 已删除底部固定距离卡片、三段读数和车道数值叠加；LDW/车道 UI 不属于本版验收 |
 
 ## 2. 保留 / 修改 / 新增
 
@@ -32,11 +34,11 @@
 | `MainActivity` | LiteRT 运行时异常指数退避；车速链路要求 FINE，COARSE 仅用于提示升级权限，不作为有效车速来源 |
 | `AlertAudio` | 高优先级报警会停止已有低优先级 SoundPool 流和 ToneGenerator；`stop()` 清理优先级锁 |
 | `AutoCalibrationLearner` | 以车道宽度近/远比值为观测量反解俯仰；驾驶类拒识改为**暂停不清零**；"安装角度超限"只在 ROI 真的看不到路面时提示 |
-| `MainActivity` | 接线俯仰解、车道几何、三段读数；进度文案与拒识原因可视化；距离标注为估计值 |
-| `VehicleOverlayView` | 按新采样行绘制车道边界；新增 Offset / R 读数与车道中心标记 |
+| `MainActivity` | 安装向导、距离能力门控、前车状态与运行异常提示；车道学习分支由产品开关关闭 |
+| `VehicleOverlayView` | 生产构建只绘制当前跟踪目标框及其距离/告警标签；车道绘制代码保留在关闭的后续分支 |
 | `AdasSimulator` | 合成观测带宽度样本，使室内模拟走真实解算路径（自标定场景故意比配置角陡 1.5°） |
 
-**新增**：`LaneGeometry`（地面投影、车道宽、偏移、曲率、俯仰反解）、`AdasUiStatusMapper`（FCWS/LDWS/LKAS 文本与颜色）。
+**保留的后续能力**：`LaneGeometry`、`LaneDepartureDetector`、`AutoCalibrationLearner` 仍在仓库中，用于后续车道能力恢复；`AdasUiStatusMapper` 已删除，当前告警标签直接由目标叠加层和决策事件生成。
 
 ## 3. 核心解法：俯仰的观测量与持久化值
 
@@ -124,7 +126,7 @@ ROI 不可见（需要调支架）。
 | TTC ≤ 2.4 s，或 THW ≤ 1.5 s，或 HMW 条件 | `Prompt Risk` | 橙红 `#FF7043` |
 | TTC ≤ 1.2 s，或 collisionDanger / HMW_CRITICAL | `Warning Risk` | 红 `#F44336` |
 
-`AdasDecisionEngine` 的判定阈值不变，分级只在 `AdasUiStatusMapper` 内完成。
+`AdasDecisionEngine` 的 FCW/HMW/LVSA 判定链路保持独立；当前版本不启用 LDW 的驾驶决策和车道 UI。
 
 ### 5.2 车道偏离警告 LDWS
 
@@ -160,7 +162,7 @@ Z_ground = 15 m 处取值；`|a| < 1e-4` 判为直行（返回"无曲率"而不�
 `LaneDepartureDetectorTest` 的同侧亮线竞争与缺端点样本；
 `LeadVehicleMotionEstimatorTest` 的 `LOST`/重获速度历史清理；
 `UsbCameraSourceTest` 的序列号身份、候选格式和 SurfaceTexture 释放契约；
-以及 `AdasUiStatusMapperTest`、`AdasLogFormatTest`、`AutoCalibrationLearnerTest` 的既有几何、状态和日志覆盖。
+以及 `AdasLogFormatTest`、`AutoCalibrationLearnerTest` 的既有几何、状态和日志覆盖；已删除的 `AdasUiStatusMapperTest` 不再属于当前测试集。
 
 代理曾用 `javac + JUnit` 独立跑过本轮重点用例（车道 12、运动 4、跟踪 19、USB 契约 5）；几何公式在此后又做过收口，因此这些结果不能替代当前几何改动的重跑。这不等同于 Android/Gradle 全量测试通过，环境中的 Gradle 启动仍受 loopback 错误阻断。
 
@@ -169,10 +171,10 @@ Z_ground = 15 m 处取值；`|a| < 1e-4` 判为直行（返回"无曲率"而不�
 | `LaneGeometry`：投影、宽度、偏移、曲率、比值反解、视场钳制 | 已实现 |
 | `LaneDepartureDetector`：9 行采样、身份锁定、局部归一化、宽度样本 | 已实现 |
 | `AutoCalibrationLearner`：比值观测量、暂停语义、拒识归因、MAD 收敛 | 已实现 |
-| `AdasUiStatusMapper`：FCWS 三级 / LDWS / LKAS 六态 | 已实现 |
+| `AdasUiStatusMapper`：FCWS/LDWS/LKAS 状态映射 | 已删除；当前由决策事件直接驱动目标标签 |
 | `AdasSimulator` + 室内模拟场景走真实解算路径 | 已实现 |
-| UI：三段读数、Offset/R 叠加显示、距离估计标注、拒识提示 | 已实现 |
-| 安装向导：按安装位置的高度预设、默认俯仰 8°、HFOV 自检提示 | 已实现 |
+| UI：目标框旁距离/告警标签、时间、车速、设置入口、未配置提示 | 已实现；底部固定距离卡片和车道 Offset/R 读数已删除 |
+| 安装向导：按安装位置的高度预设、默认俯仰 8°、2°~14° 受控滑块、HFOV 自检提示 | 已实现 |
 | 叠加层：走廊从机盖参考线起画；丢线 250 ms 内保持实线，之后降级为灰色虚线 | 已实现 |
 | 诊断日志：`[CALIB]` 1 Hz 心跳、`[LANE]` 逐行采样、`[LANE-DRAW]` 绘制样式 | 已实现 |
 | 推理运行时异常退避、精确定位权限门控、音频高优先级抢占 | 已实现，设备行为未验证 |

@@ -23,6 +23,7 @@ public final class VehicleOverlayView extends View {
     private final Paint regionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint laneFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint laneLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint targetLabelBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private VehicleDetector.Result result;
     private LeadVehicleTracker.Snapshot tracking;
     private CameraCalibration calibration;
@@ -30,6 +31,7 @@ public final class VehicleOverlayView extends View {
     private LaneDepartureDetector.Observation lane;
     private LaneGeometry.LaneSnapshot laneSnapshot;
     private AdasDecisionEngine.Decision decision;
+    private LeadVehicleMotionEstimator.Measurement motion;
     private boolean measurementAvailable;
     private boolean speedAvailable;
     /**
@@ -89,7 +91,7 @@ public final class VehicleOverlayView extends View {
                           LaneDepartureDetector.Observation lane,
                           AdasDecisionEngine.Decision decision,
                           boolean measurementAvailable, boolean speedAvailable) {
-        setResult(result, tracking, lane, null, decision, measurementAvailable, speedAvailable);
+        setResult(result, tracking, lane, null, decision, measurementAvailable, speedAvailable, null);
     }
 
     public void setResult(VehicleDetector.Result result, LeadVehicleTracker.Snapshot tracking,
@@ -97,6 +99,16 @@ public final class VehicleOverlayView extends View {
                           LaneGeometry.LaneSnapshot laneSnapshot,
                           AdasDecisionEngine.Decision decision,
                           boolean measurementAvailable, boolean speedAvailable) {
+        setResult(result, tracking, lane, laneSnapshot, decision, measurementAvailable,
+                speedAvailable, null);
+    }
+
+    public void setResult(VehicleDetector.Result result, LeadVehicleTracker.Snapshot tracking,
+                          LaneDepartureDetector.Observation lane,
+                          LaneGeometry.LaneSnapshot laneSnapshot,
+                          AdasDecisionEngine.Decision decision,
+                          boolean measurementAvailable, boolean speedAvailable,
+                          LeadVehicleMotionEstimator.Measurement motion) {
         this.result = result;
         this.tracking = result != null && tracking != null
                 && tracking.timestampNanos() == result.timestampNanos() ? tracking : null;
@@ -111,6 +123,7 @@ public final class VehicleOverlayView extends View {
         this.decision = decision;
         this.measurementAvailable = measurementAvailable;
         this.speedAvailable = speedAvailable;
+        this.motion = motion;
         invalidate();
     }
 
@@ -189,10 +202,13 @@ public final class VehicleOverlayView extends View {
         float left = (getWidth() - width) / 2f;
         float top = (getHeight() - height) / 2f;
 
-        // Calibration baseline guidelines are always drawn during uncalibrated, wizard, learning, or size mismatch states
+        // The lightweight release has no lane guidance UI. Keep this branch behind the product
+        // switch so an old calibration state can never expose the previous engineering guides.
         boolean sizeMismatch = result != null && calibration != null
                 && !calibration.isUsableFor(result.frameWidth(), result.frameHeight());
-        if (calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null || sizeMismatch) {
+        if (AdasCalibrationMode.LDW_ENABLED
+                && (calibrationStatus != CalibrationStore.Status.CALIBRATED
+                || calibration == null || sizeMismatch)) {
             Paint calibrationPaint = regionPaint;
             calibrationPaint.setColor(0xFFFFB74D);
             calibrationPaint.setPathEffect(null);
@@ -215,8 +231,16 @@ public final class VehicleOverlayView extends View {
 
         // Lane geometry is extrapolated from a fixed normalized ROI, so it is only meaningful while
         // the active calibration is bound to this exact frame size.
-        if (!sizeMismatch) {
+        if (AdasCalibrationMode.LDW_ENABLED && !sizeMismatch) {
             drawLane(canvas, left, top, width, height);
+        }
+        drawTargetReadout(canvas, left, top, width, height);
+        // Keep unselected boxes for debug verification; production shows only the tracked target
+        // together with its distance label so the overlay follows the real vehicle position.
+        if (!BuildConfig.DEBUG) {
+            drawTargetBox(canvas, left, top, width, height);
+            logLaneDrawing(false);
+            return;
         }
         for (VehicleDetector.Detection detection : result.vehicles()) {
             boolean selected = tracking != null && detection.equals(tracking.detection());
@@ -244,9 +268,58 @@ public final class VehicleOverlayView extends View {
         logLaneDrawing(hoodLineVisible());
     }
 
+    /** Draws the distance next to the currently tracked vehicle instead of in a fixed HUD card. */
+    private void drawTargetReadout(Canvas canvas, float left, float top, float width, float height) {
+        if (tracking == null || tracking.detection() == null || motion == null || !motion.visible()
+                || motion.trackId() != tracking.trackId() || !Double.isFinite(motion.distanceMeters())) {
+            return;
+        }
+        VehicleDetector.Detection target = tracking.detection();
+        float x = left + target.left() * width;
+        float y = top + target.top() * height;
+        int color = selectedColor();
+        String label = String.format(Locale.ROOT, "%.1f m", motion.distanceMeters());
+        if (decision != null && decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
+            label += " · FCW";
+        } else if (decision != null
+                && decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
+            label += " · HMW";
+        } else if (decision != null
+                && decision.events().contains(AdasDecisionEngine.Alert.LVSA)) {
+            label += " · LVSA";
+        }
+        float density = getResources().getDisplayMetrics().density;
+        float textSize = 14f * getResources().getDisplayMetrics().scaledDensity;
+        textPaint.setTextSize(textSize);
+        textPaint.setColor(Color.WHITE);
+        float paddingX = 8f * density;
+        float paddingY = 5f * density;
+        float labelWidth = textPaint.measureText(label) + paddingX * 2f;
+        float labelLeft = Math.max(left, Math.min(x, left + width - labelWidth));
+        float baseline = Math.max(top + textSize + paddingY, y - 7f * density);
+        targetLabelBackgroundPaint.setColor((color & 0x00FFFFFF) | 0xD9000000);
+        canvas.drawRoundRect(labelLeft, baseline - textSize - paddingY,
+                labelLeft + labelWidth, baseline + paddingY * 0.5f,
+                7f * density, 7f * density, targetLabelBackgroundPaint);
+        canvas.drawText(label, labelLeft + paddingX, baseline, textPaint);
+    }
+
+    private void drawTargetBox(Canvas canvas, float left, float top, float width, float height) {
+        if (tracking == null || tracking.detection() == null || motion == null || !motion.visible()
+                || motion.trackId() != tracking.trackId()) {
+            return;
+        }
+        VehicleDetector.Detection target = tracking.detection();
+        boxPaint.setColor(selectedColor());
+        boxPaint.setStrokeWidth(2.5f * getResources().getDisplayMetrics().density);
+        canvas.drawRect(left + target.left() * width, top + target.top() * height,
+                left + target.right() * width, top + target.bottom() * height, boxPaint);
+    }
+
     /** True when the calibration reference lines are being drawn this frame. */
     private boolean hoodLineVisible() {
-        return calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null;
+        return AdasCalibrationMode.LDW_ENABLED
+                && (calibrationStatus != CalibrationStore.Status.CALIBRATED || calibration == null);
     }
 
     /**
@@ -445,7 +518,7 @@ public final class VehicleOverlayView extends View {
         if (!speedAvailable) {
             return 0xFFB0BEC5;
         }
-        return 0xFF00E676;
+        return 0xFF65D6C5;
     }
 
     /**

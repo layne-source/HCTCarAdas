@@ -11,6 +11,9 @@ public record CameraCalibration(int imageWidth, int imageHeight,
                                 double principalPointYNormalized,
                                 double pitchDegrees) {
     private static final double MIN_GROUND_RAY_TANGENT = 0.01;
+    /** Reject boxes whose contact point is effectively on the horizon; their range is unstable. */
+    private static final double MIN_HORIZON_GAP_NORMALIZED = 0.002;
+    private static final double MAX_BOTTOM_Y_NORMALIZED = 0.995;
     private static final double MAX_VALID_DISTANCE_METERS = 200.0;
     public CameraCalibration {
         if (imageWidth <= 0 || imageHeight <= 0) {
@@ -40,7 +43,13 @@ public record CameraCalibration(int imageWidth, int imageHeight,
     /** Returns NaN when the target is not geometrically valid for the planar model. */
     public double estimateDistanceMeters(double bottomYNormalized) {
         if (!Double.isFinite(bottomYNormalized) || bottomYNormalized <= 0.0
-                || bottomYNormalized > 1.0) {
+                || bottomYNormalized >= MAX_BOTTOM_Y_NORMALIZED) {
+            return Double.NaN;
+        }
+        // Near the horizon, a one-pixel detector jitter becomes a very large range jump. Fail
+        // closed until the target's ground contact is sufficiently below the configured horizon.
+        double horizon = horizonYNormalized();
+        if (!Double.isFinite(horizon) || bottomYNormalized <= horizon + MIN_HORIZON_GAP_NORMALIZED) {
             return Double.NaN;
         }
         double rayAngle = Math.atan(

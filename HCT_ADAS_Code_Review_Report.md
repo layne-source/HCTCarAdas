@@ -120,8 +120,8 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 | 采集 | `UsbCameraSource`(478) `FrameDispatcher`(103) `FrameConsumer`(116) |
 | 感知 | `LiteRtVehicleDetector` `Nv21Preprocessor` `LaneDepartureDetector` |
 | 跟踪与测距 | `LeadVehicleTracker` `LeadVehicleMotionEstimator` `CameraCalibration` `LaneGeometry` |
-| 标定 | `AutoCalibrationLearner`(259) `CalibrationStore`(135) |
-| 决策 | `AdasDecisionEngine` `AdasUiStatusMapper` |
+| 标定 | `AutoCalibrationLearner`(259) `CalibrationStore` `AdasCalibrationMode` |
+| 决策 | `AdasDecisionEngine` |
 | 输出 | `AlertAudio` `VehicleOverlayView` `AdasLogFormat` |
 | 编排 | `MainActivity` `AdasSimulator` `VehicleDetector` |
 

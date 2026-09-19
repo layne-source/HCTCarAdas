@@ -8,6 +8,7 @@ public final class CalibrationStore {
     public enum Status {
         UNCONFIGURED,
         WIZARD_COMPLETED,
+        DISTANCE_READY,
         CALIBRATING,
         CALIBRATED
     }

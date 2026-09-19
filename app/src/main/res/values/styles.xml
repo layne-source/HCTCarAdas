@@ -1,9 +1,11 @@
 <resources>
     <style name="Theme.HctAdas" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#4CAF50</item>
+        <item name="android:colorAccent">#65D6C5</item>
+        <item name="android:windowBackground">#090B0E</item>
+        <item name="android:windowFullscreen">true</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#101010</item>
-        <item name="android:navigationBarColor">#101010</item>
+        <item name="android:statusBarColor">#090B0E</item>
+        <item name="android:navigationBarColor">#090B0E</item>
     </style>
 </resources>

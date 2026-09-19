@@ -3,7 +3,7 @@
     android:id="@+id/adas_content"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#101010">
+    android:background="#090B0E">
 
     <TextureView
         android:id="@+id/usb_preview"
@@ -16,35 +16,176 @@
         android:layout_height="match_parent" />
 
     <LinearLayout
-        android:id="@+id/controls_panel"
+        android:id="@+id/top_info"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
-        android:background="#99000000"
-        android:orientation="vertical"
-        android:padding="12dp">
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="16dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/clock"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:shadowColor="#CC000000"
+            android:shadowDx="0"
+            android:shadowDy="1"
+            android:shadowRadius="4"
+            android:text="2026-09-19  12:00:00"
+            android:textColor="#FFF7F9FA"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
         <TextView
             android:id="@+id/status"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:maxWidth="360dp"
+            android:shadowColor="#E6000000"
+            android:shadowDx="0"
+            android:shadowDy="1"
+            android:shadowRadius="3"
             android:text="@string/app_bootstrap_status"
-            android:textColor="#FFFFFFFF"
-            android:textSize="16sp" />
+            android:textColor="#DDE7EDF0"
+            android:textSize="11sp" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/setup_prompt"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:background="@drawable/hud_setup_prompt"
+        android:clickable="true"
+        android:contentDescription="打开安装设置"
+        android:elevation="10dp"
+        android:focusable="true"
+        android:gravity="center"
+        android:onClick="openCalibrationFromSettings"
+        android:orientation="vertical"
+        android:paddingStart="28dp"
+        android:paddingTop="22dp"
+        android:paddingEnd="28dp"
+        android:paddingBottom="20dp">
+
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_settings_adas" />
+
         <TextView
-            android:id="@+id/metrics"
+            android:id="@+id/setup_prompt_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="#FFFFFFFF"
-            android:textSize="14sp" />
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="需要完成安装设置"
+            android:textColor="#FFF7F9FA"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
         <TextView
-            android:id="@+id/calibration"
+            android:id="@+id/setup_prompt_detail"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:clickable="true"
-            android:focusable="true"
-            android:text="@string/calibration_unset"
-            android:textColor="#FFFFD180"
-            android:textSize="14sp" />
+            android:layout_marginTop="5dp"
+            android:gravity="center"
+            android:maxWidth="330dp"
+            android:text="设置车辆类型、镜头视野和安装俯仰角后启用距离预警"
+            android:textColor="#FFB8C4CC"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/hud_primary_action"
+            android:gravity="center"
+            android:minHeight="38dp"
+            android:paddingStart="22dp"
+            android:paddingEnd="22dp"
+            android:text="开始设置"
+            android:textColor="#FF06110F"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/speed_panel"
+        android:layout_width="88dp"
+        android:layout_height="88dp"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="20dp"
+        android:layout_marginBottom="20dp"
+        android:background="@drawable/hud_corner_card"
+        android:elevation="8dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingTop="11dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.08"
+            android:text="SPEED"
+            android:textColor="#FFB8C4CC"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/speed_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:includeFontPadding="false"
+            android:text="--"
+            android:textColor="#FFF7F9FA"
+            android:textSize="29sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="KM/H"
+            android:textColor="#FFB8C4CC"
+            android:textSize="9sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/settings_button"
+        android:layout_width="88dp"
+        android:layout_height="88dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="20dp"
+        android:layout_marginBottom="20dp"
+        android:background="@drawable/hud_corner_card"
+        android:clickable="true"
+        android:contentDescription="安装设置"
+        android:elevation="8dp"
+        android:focusable="true"
+        android:gravity="center"
+        android:onClick="openCalibrationFromSettings"
+        android:orientation="vertical">
+
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_settings_adas" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:text="设置"
+            android:textColor="#FFF7F9FA"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <TextView
@@ -52,8 +193,9 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
-        android:layout_margin="12dp"
-        android:background="#B30D47A1"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="20dp"
+        android:background="@drawable/hud_debug_button"
         android:clickable="true"
         android:focusable="true"
         android:paddingStart="14dp"
@@ -62,5 +204,5 @@
         android:paddingBottom="8dp"
         android:text="室内模拟测试"
         android:textColor="#FF80D8FF"
-        android:textSize="14sp" />
+        android:textSize="12sp" />
 </FrameLayout>
