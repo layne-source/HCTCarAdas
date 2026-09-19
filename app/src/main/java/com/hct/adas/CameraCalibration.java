@@ -9,12 +9,22 @@ public record CameraCalibration(int imageWidth, int imageHeight,
                                 double cameraHeightMeters,
                                 double focalLengthYNormalized,
                                 double principalPointYNormalized,
-                                double pitchDegrees) {
+                                double pitchDegrees,
+                                double guideCenterXNormalized) {
     private static final double MIN_GROUND_RAY_TANGENT = 0.01;
     /** Reject boxes whose contact point is effectively on the horizon; their range is unstable. */
     private static final double MIN_HORIZON_GAP_NORMALIZED = 0.002;
     private static final double MAX_BOTTOM_Y_NORMALIZED = 0.995;
     private static final double MAX_VALID_DISTANCE_METERS = 200.0;
+
+    /** Legacy geometry callers use a centered visual guide. This is not the optical principal point. */
+    public CameraCalibration(int imageWidth, int imageHeight, double cameraHeightMeters,
+                             double focalLengthYNormalized, double principalPointYNormalized,
+                             double pitchDegrees) {
+        this(imageWidth, imageHeight, cameraHeightMeters, focalLengthYNormalized,
+                principalPointYNormalized, pitchDegrees, 0.5);
+    }
+
     public CameraCalibration {
         if (imageWidth <= 0 || imageHeight <= 0) {
             throw new IllegalArgumentException("image dimensions must be positive");
@@ -33,6 +43,10 @@ public record CameraCalibration(int imageWidth, int imageHeight,
         }
         if (!Double.isFinite(pitchDegrees) || pitchDegrees < -30.0 || pitchDegrees > 45.0) {
             throw new IllegalArgumentException("pitch must be between -30 and 45 degrees");
+        }
+        if (!Double.isFinite(guideCenterXNormalized)
+                || guideCenterXNormalized < 0.0 || guideCenterXNormalized > 1.0) {
+            throw new IllegalArgumentException("visual guide center must be inside the image");
         }
     }
 
@@ -65,7 +79,7 @@ public record CameraCalibration(int imageWidth, int imageHeight,
 
     public CameraCalibration withPitchDegrees(double newPitch) {
         return new CameraCalibration(imageWidth, imageHeight, cameraHeightMeters,
-                focalLengthYNormalized, principalPointYNormalized, newPitch);
+                focalLengthYNormalized, principalPointYNormalized, newPitch, guideCenterXNormalized);
     }
 
     /**

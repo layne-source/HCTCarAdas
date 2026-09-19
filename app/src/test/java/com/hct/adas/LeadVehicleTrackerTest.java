@@ -249,6 +249,53 @@ public final class LeadVehicleTrackerTest {
         assertNotEquals(oldId, switched.trackId());
     }
 
+    @Test
+    public void calibratedHorizonAllowsDistantLeadAcrossInstallationAnglesAndResolutions() {
+        for (int width : new int[] {1280, 1920}) {
+            int height = width * 9 / 16;
+            for (double pitch : new double[] {2.0, 8.0, 14.0}) {
+                for (double hfov : new double[] {90.0, 120.0}) {
+                    CameraCalibration calibration = CameraCalibration.fromWizard(
+                            width, height, 1.3, hfov, pitch);
+                    // Independent pinhole projection of a ground contact 22 m ahead.
+                    double fy = width / (2.0 * height * Math.tan(Math.toRadians(hfov / 2.0)));
+                    float bottom = (float) (0.5 + fy * Math.tan(
+                            Math.atan2(1.3, 22.0) - Math.toRadians(pitch)));
+                    VehicleDetector.Detection distant = box(0.46f, bottom - 0.08f, 0.54f, bottom);
+                    LeadVehicleTracker tracker = new LeadVehicleTracker();
+                    LeadVehicleTracker.Snapshot result = null;
+                    for (int i = 0; i < 4; i++) {
+                        result = tracker.update(new VehicleDetector.Result(
+                                i * 200_000_000L, width, height, 0, List.of(distant)), null, calibration);
+                    }
+                    assertEquals(LeadVehicleTracker.State.TRACKING, result.state());
+                    assertSame(distant, result.detection());
+                }
+            }
+        }
+    }
+
+    @Test
+    public void missingOrMismatchedCalibrationKeepsFallbackSearchRegion() {
+        VehicleDetector.Detection distant = box(0.46f, 0.25f, 0.54f, 0.333f);
+        CameraCalibration wrongSize = CameraCalibration.fromWizard(1920, 1080, 1.3, 90, 14);
+        assertEquals(LeadVehicleTracker.State.NONE,
+                new LeadVehicleTracker().update(frame(0, distant), null, null).state());
+        assertEquals(LeadVehicleTracker.State.NONE,
+                new LeadVehicleTracker().update(frame(0, distant), null, wrongSize).state());
+    }
+
+    @Test
+    public void calibratedSearchRejectsAboveHorizonAndDoesNotUseVisualGuideAsCameraCenter() {
+        CameraCalibration lens = CameraCalibration.fromWizard(1280, 720, 1.3, 90, 14);
+        CameraCalibration shiftedGuide = new CameraCalibration(1280, 720, 1.3,
+                lens.focalLengthYNormalized(), 0.5, 14, 0.62);
+        VehicleDetector.Detection aboveHorizon = box(0.46f, 0.15f, 0.54f, 0.25f);
+        VehicleDetector.Detection side = box(0.59f, 0.25f, 0.65f, 0.333f);
+        assertEquals(LeadVehicleTracker.State.NONE, new LeadVehicleTracker().update(
+                frame(0, aboveHorizon, side), null, shiftedGuide).state());
+    }
+
     private static LeadVehicleTracker.Snapshot confirm(LeadVehicleTracker tracker,
                                                      long startMillis,
                                                      VehicleDetector.Detection detection) {

@@ -1,11 +1,15 @@
 # HCT ADAS 全链路代码审查报告
 
+> **当前实现说明（2026-09-19）：** 本报告保留早期 rev.4/rev.5 的问题证据和关闭记录。当前工作区已移除摄像头序列号身份、旧安装向导和中央安装提示；标定由紧凑设置页进入双线校准，并只按当前画面分辨率保存。报告中涉及 `serial`、`cameraId`、`reloadCalibrationForCamera()` 和旧向导的段落均为历史记录，不代表当前运行链路。
+
+> **本次全链路复核：** 修正固定纵向搜索区在大俯仰角下拒绝远车的问题；速度初始化改为相邻原始差分一致后才启用限幅，避免启动回摆产生假 FCW；校准与预览比例改用独立 UVC 帧快照，隔离相机会话；统一导航栏/切口避让；静态核验 AAR 并显式关闭原始 USB 控制块；修复模型异常无 message 时状态渲染可能空指针。双线保存完整预览配置和视觉中心，后者仅供未来固定图形使用。源码与独立复审已完成，未编译或运行 JUnit，不代表实车验收通过。
+
 | 项目 | 内容 |
 | --- | --- |
 | 审查对象 | `HCTCarAdas` 独立 Android 工程（Java 前台原型） |
-| 审查基线 | **rev.7 历史基线：Git HEAD `6534ca0`；当前为 2026-09-18 未提交工作区加固** |
-| 审查方式 | 全量静态审查；Gradle focused suite 受环境 `Unable to establish loopback connection` 阻断；另用临时 `javac + JUnit` harness 跑了 106 个纯 Java 用例；未做设备验证 |
-| 审查范围 | 主源当前 20 个 Java 类 + 单元测试当前 14 类 143 个 `@Test` 方法 + 资源 + 两份方案文档一致性 |
+| 审查基线 | **rev.7 历史基线：Git HEAD `6534ca0`；当前为 2026-09-19 未提交工作区加固** |
+| 审查方式 | 全量静态审查；Gradle focused suite 受环境 `Unable to establish loopback connection` 阻断；历史记录显示曾用临时 `javac + JUnit` harness 跑过 106 个纯 Java 用例；未做设备验证 |
+| 审查范围 | 当前有效采集至告警/UI 链路；主源 22 个 Java 类、测试 15 类 147 个 `@Test` 方法；资源及四份文档一致性。关闭的 LDW 类保留为后续能力 |
 | 结论定性 | 历史 P1/P2 已闭环；当前工作区补入车道同侧连续性、`LOST` 重获速度清理、LiteRT 退避、精确定位权限门控、USB 生命周期/格式协商和音频主动抢占。几何、真实 UVC、LiteRT、音频和道路投影仍需设备验证 |
 | 修订记录 | **rev.2**：撤销 2 项误判、重定性 2 项为产品权衡<br>**rev.3**：基线 `6599789`，闭环 3 项 P1 + 2 组 P2，新增 P2-10<br>**rev.4**：基线 `32ea041`，闭环 P0-2 与 P2-10、新增 P2-11<br>**rev.5**：基线 `c6c1b46`，P1/P2 级别全部关闭（含 P2-8 按车机常亮前提关闭）；详见第 0 节 |
 
@@ -125,7 +129,7 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 | 输出 | `AlertAudio` `VehicleOverlayView` `AdasLogFormat` |
 | 编排 | `MainActivity` `AdasSimulator` `VehicleDetector` |
 
-配套：`app/src/test/java/com/hct/adas/` 当前 14 个测试类、143 个 `@Test` 方法，另有 `UsbCameraSourceTest` 等本轮契约测试；`AndroidManifest.xml`、`activity_main.xml`、`strings.xml`、`app/build.gradle`。本轮不以工作区构建产物作为新鲜验证证据。
+配套：`app/src/test/java/com/hct/adas/` 当前 15 个测试类、147 个 `@Test` 方法，另有 `UsbCameraSourceTest` 等本轮契约测试；`AndroidManifest.xml`、`activity_main.xml`、`strings.xml`、`app/build.gradle`。本轮不以工作区构建产物作为新鲜验证证据。
 
 ### 1.2 构建产物与源码同源校验
 
@@ -161,9 +165,9 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 
 ### 1.3 审查边界
 
-- Gradle focused suite 仍受环境 loopback 错误阻断；本轮临时 `javac + JUnit` harness 执行的 106 个纯 Java 用例全部通过，其中包含几何 26 项。USB 5 项契约测试仍只作源码/API 静态核对，未在 Android classpath 下重跑
+- Gradle focused suite 仍受环境 loopback 错误阻断；历史临时 `javac + JUnit` harness 曾执行的 106 个纯 Java 用例全部通过，其中包含几何 26 项。本轮未重新执行；USB 契约测试仍只作源码/API 静态核对，未在 Android classpath 下重跑
 - 未做设备/实车验证（P1-2 的 USB 广播可达性因测试机预授权而未被走到，已在代码与报告中留档限定条件）
-- 未审查 `libusbcamera.aar` 内部实现（仅按调用契约推断）
+- 早期记录未审查 `libusbcamera.aar` 内部实现；2026-09-19 本轮已静态核验控制块克隆、关闭和 monitor 移除的关键字节码，未验证 native 运行行为
 - 本报告不修改任何代码与既有文档
 
 ---
@@ -349,7 +353,7 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 `w_norm = W·f_x·sin(α+β)/(H·cosβ)`，`β = atan((y-c_y)/f_y)`；目标测距使用 `Z_ground=H/tan(α+β)`，横向米制值使用
 `Z_axis=H·cosβ/sin(α+β)` 和 `X=(x-0.5)·Z_axis/f_x`。发布的米制偏移先除以近端观测宽度再乘物理车道宽，车辆在车道中心右侧为正。曲率拟合 `X=aZ_ground²+bZ_ground+c` 后使用
 `R=(1+(2aZ_ground+b)²)^1.5/(2a)`，负值为 Left，正值为 Right；`|a|<1e-4` 显式表示已知直行。
-`LaneGeometryTest` 现在包含不复用生产函数的世界点投影/横向校验（显式使用相机 pitch 旋转、`Z_ground=H/tan(α+β)`、`Z_axis=H·cosβ/sin(α+β)` 和 `x=0.5+f_xX/Z_axis`）、偏移符号和曲率方向断言；临时 `javac + JUnit` harness 的 26 项几何/车道用例通过，Gradle 仍受 loopback 环境错误阻断。
+`LaneGeometryTest` 现在包含不复用生产函数的世界点投影/横向校验（显式使用相机 pitch 旋转、`Z_ground=H/tan(α+β)`、`Z_axis=H·cosβ/sin(α+β)` 和 `x=0.5+f_xX/Z_axis`）、偏移符号和曲率方向断言；历史临时 `javac + JUnit` harness 的 26 项几何/车道用例曾通过，本轮未重新执行，Gradle 仍受 loopback 环境错误阻断。
 
 ---
 
@@ -708,13 +712,13 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 | --- | --- | --- |
 | 1 | `FCW_CONFIRM_MILLIS=400` 且"未参与判定" | 改为 200 且已参与，并写明"连续 3 个分析帧且跨度 ≥200 ms" |
 | 2 | "速度 ≥45 km/h 时普通提醒为 THW≤1.2 s 或 ≤8 m" | 改为 **15 km/h**，并补低速段与停车段行为 |
-| 3 | "9 个 JVM 测试类、约 75 个方法" | 历史版本曾同步为 10 类 / 81 方法；当前工作区已增至 **14 类 / 143 个 `@Test` 方法**，本轮未执行 |
+| 3 | "9 个 JVM 测试类、约 75 个方法" | 历史版本曾同步为 10 类 / 81 方法；当前工作区已增至 **15 类 / 147 个 `@Test` 方法**，本轮未执行 |
 | 4 | "`USBMonitor.openDevice()` 原始控制块当前未保存" | 已改写 |
 | 5 | "LiteRT 连续 3 次异常…没有退避" | 已改写 |
 
 同时同步了性能基线（31 FPS 采集、推理计时口径）与新增的 ROI 守卫说明。
 
-> **当前同步**：历史记录中的 81 是 rev.4/rev.5 时点；当前工作区静态扫描为 14 个测试类、143 个 `@Test` 方法，不能据此声称 Gradle 测试通过。
+> **当前同步**：历史记录中的 81 是 rev.4/rev.5 时点；当前工作区静态扫描为 15 个测试类、147 个 `@Test` 方法，不能据此声称 Gradle 测试通过。
 
 ### 7.2 归因（历史记录）
 

@@ -13,16 +13,10 @@ public final class CalibrationStore {
         CALIBRATED
     }
 
-    /**
-     * Records written before camera binding existed carry no {@link #KEY_CAMERA_ID}, so
-     * {@link #load(String)} cannot attribute them to a device and they are treated as unbound
-     * rather than migrated. That is a deliberate choice for the current test phase: the project has
-     * no deployed users to keep compatible, and silently adopting an unattributable pitch is
-     * exactly the failure this binding exists to prevent. Revisit if the app ever ships to users
-     * who would lose a valid calibration on upgrade.
-     */
     private static final String PREFS = "camera_calibration";
-    private static final int VERSION = 1;
+    // Old profiles may have been enabled with the default pitch without line confirmation.
+    // Require one manual alignment before re-enabling them under the new installation contract.
+    private static final int VERSION = 2;
     private static final String KEY_VERSION = "version";
     private static final String KEY_WIDTH = "image_width";
     private static final String KEY_HEIGHT = "image_height";
@@ -30,9 +24,9 @@ public final class CalibrationStore {
     private static final String KEY_FOCAL_Y = "focal_y_normalized";
     private static final String KEY_PRINCIPAL_Y = "principal_y_normalized";
     private static final String KEY_PITCH = "pitch_degrees";
+    private static final String KEY_GUIDE_CENTER_X = "guide_center_x_normalized";
     private static final String KEY_STATUS = "calibration_status";
     private static final String KEY_PROGRESS = "learning_progress";
-    private static final String KEY_CAMERA_ID = "camera_hardware_id";
     private final SharedPreferences preferences;
 
     public CalibrationStore(Context context) {
@@ -42,7 +36,8 @@ public final class CalibrationStore {
 
     public CameraCalibration load() {
         if (preferences.getInt(KEY_VERSION, 0) != VERSION
-                || !preferences.contains(KEY_WIDTH) || !preferences.contains(KEY_HEIGHT)) {
+                || !preferences.contains(KEY_WIDTH) || !preferences.contains(KEY_HEIGHT)
+                || !preferences.contains(KEY_GUIDE_CENTER_X)) {
             return null;
         }
         try {
@@ -52,36 +47,11 @@ public final class CalibrationStore {
                     Double.longBitsToDouble(preferences.getLong(KEY_CAMERA_HEIGHT, 0L)),
                     Double.longBitsToDouble(preferences.getLong(KEY_FOCAL_Y, 0L)),
                     Double.longBitsToDouble(preferences.getLong(KEY_PRINCIPAL_Y, 0L)),
-                    Double.longBitsToDouble(preferences.getLong(KEY_PITCH, 0L)));
+                    Double.longBitsToDouble(preferences.getLong(KEY_PITCH, 0L)),
+                    Double.longBitsToDouble(preferences.getLong(KEY_GUIDE_CENTER_X, 0L)));
         } catch (RuntimeException malformed) {
             return null;
         }
-    }
-    public CameraCalibration load(String expectedCameraId) {
-        if (expectedCameraId != null && !expectedCameraId.isEmpty()) {
-            String storedId = preferences.getString(KEY_CAMERA_ID, null);
-            if (!expectedCameraId.equals(storedId)) {
-                return null;
-            }
-        }
-        return load();
-    }
-
-    /**
-     * Camera id recorded together with the stored calibration, or an empty string when the
-     * calibration predates camera binding or no calibration is stored at all.
-     */
-    public String storedCameraId() {
-        String storedId = preferences.getString(KEY_CAMERA_ID, null);
-        return storedId == null ? "" : storedId;
-    }
-
-    public Status loadStatus(String expectedCameraId) {
-        CameraCalibration calibration = load(expectedCameraId);
-        if (calibration == null) {
-            return Status.UNCONFIGURED;
-        }
-        return loadStatus();
     }
 
     public Status loadStatus() {
@@ -106,14 +76,10 @@ public final class CalibrationStore {
     }
 
     public void save(CameraCalibration calibration) {
-        save(calibration, Status.CALIBRATED, 100, null);
+        save(calibration, Status.CALIBRATED, 100);
     }
 
     public void save(CameraCalibration calibration, Status status, int progress) {
-        save(calibration, status, progress, null);
-    }
-
-    public void save(CameraCalibration calibration, Status status, int progress, String cameraId) {
         if (calibration == null) {
             throw new IllegalArgumentException("calibration must not be null");
         }
@@ -130,13 +96,10 @@ public final class CalibrationStore {
                 .putLong(KEY_PRINCIPAL_Y, Double.doubleToRawLongBits(
                         calibration.principalPointYNormalized()))
                 .putLong(KEY_PITCH, Double.doubleToRawLongBits(calibration.pitchDegrees()))
+                .putLong(KEY_GUIDE_CENTER_X, Double.doubleToRawLongBits(
+                        calibration.guideCenterXNormalized()))
                 .putString(KEY_STATUS, targetStatus.name())
                 .putInt(KEY_PROGRESS, clampedProgress);
-        if (cameraId != null && !cameraId.isEmpty()) {
-            editor.putString(KEY_CAMERA_ID, cameraId);
-        } else {
-            editor.remove(KEY_CAMERA_ID);
-        }
         editor.apply();
     }
 

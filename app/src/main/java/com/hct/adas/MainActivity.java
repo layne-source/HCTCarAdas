@@ -18,18 +18,17 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.TextureView;
 import android.view.View;
-import android.view.ViewGroup;
+import android.view.Gravity;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.RadioButton;
-import android.widget.RadioGroup;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -54,16 +53,6 @@ public final class MainActivity extends Activity {
     private static final double HEIGHT_SEDAN_METERS = 1.30;
     private static final double HEIGHT_SUV_METERS = 1.55;
     private static final double HEIGHT_TRUCK_METERS = 2.00;
-    /**
-     * Supported customer-facing installation range; values are selected, not free-typed. The upper
-     * bound mirrors the lane ROI guard at the target mounting height (~14.4 deg): accepting a steeper
-     * angle would store a calibration whose every frame is then rejected for looking at the hood.
-     */
-    private static final double MIN_INITIAL_PITCH_DEGREES = 2.0;
-    private static final double MAX_INITIAL_PITCH_DEGREES = 14.0;
-    private static final double PITCH_STEP_DEGREES = 0.5;
-    private static final int PITCH_STEPS = (int) Math.round(
-            (MAX_INITIAL_PITCH_DEGREES - MIN_INITIAL_PITCH_DEGREES) / PITCH_STEP_DEGREES);
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private volatile RuntimeException initializationFailure;
@@ -75,12 +64,16 @@ public final class MainActivity extends Activity {
     private CharSequence cameraStatusText;
     private TextView clockView;
     private TextView speedView;
-    private View setupPromptView;
-    private TextView setupPromptTitleView;
-    private TextView setupPromptDetailView;
     private View speedPanel;
     private View settingsButton;
-    private int baseBottomHudMarginPx;
+    private View calibrationOverlayContainer;
+    private CalibrationOverlayView calibrationOverlayView;
+    private TextView calibrationConfirmView;
+    private CameraCalibration pendingCalibration;
+    private long pendingCalibrationGeneration;
+    private int pendingCalibrationSession;
+    private AlertDialog settingsDialog;
+    private final OnBackInvokedCallback cancelCalibrationOnBack = this::hideCalibrationOverlay;
     private CalibrationStore calibrationStore;
     private volatile CameraCalibration calibration;
     private final AutoCalibrationLearner autoCalibrationLearner = new AutoCalibrationLearner();
@@ -138,8 +131,14 @@ public final class MainActivity extends Activity {
     private long previousProcessedTimestampNanos;
     private final Handler metricsHandler = new Handler(Looper.getMainLooper());
     private record SimulationSnapshot(CameraCalibration calibration,
-                                      CalibrationStore.Status status,
-                                      String cameraId) { }
+                                      CalibrationStore.Status status) { }
+    private final Handler hudHandler = new Handler(Looper.getMainLooper());
+    private final Runnable hideHudControls = () -> {
+        if (calibrationOverlayContainer == null
+                || calibrationOverlayContainer.getVisibility() != View.VISIBLE) {
+            settingsButton.setVisibility(View.GONE);
+        }
+    };
     private final Runnable metricsUpdater = new Runnable() {
         @Override
         public void run() {
@@ -153,32 +152,49 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().setDecorFitsSystemWindows(false);
         setContentView(R.layout.activity_main);
         hideSystemStatusBar();
         View content = findViewById(R.id.adas_content);
         statusView = findViewById(R.id.status);
         clockView = findViewById(R.id.clock);
         speedView = findViewById(R.id.speed_value);
-        setupPromptView = findViewById(R.id.setup_prompt);
-        setupPromptTitleView = findViewById(R.id.setup_prompt_title);
-        setupPromptDetailView = findViewById(R.id.setup_prompt_detail);
         speedPanel = findViewById(R.id.speed_panel);
         settingsButton = findViewById(R.id.settings_button);
-        baseBottomHudMarginPx = ((ViewGroup.MarginLayoutParams) speedPanel.getLayoutParams()).bottomMargin;
+        calibrationOverlayContainer = findViewById(R.id.calibration_overlay);
+        calibrationOverlayView = findViewById(R.id.calibration_canvas);
+        calibrationConfirmView = findViewById(R.id.calibration_confirm);
+        calibrationConfirmView.setEnabled(false);
+        calibrationConfirmView.setAlpha(0.45f);
         simulationButton = findViewById(R.id.simulation_button);
         if (!BuildConfig.DEBUG) {
             simulationButton.setVisibility(View.GONE);
         }
         previewView = findViewById(R.id.usb_preview);
         overlayView = findViewById(R.id.vehicle_overlay);
-        // Registered only after overlayView exists: the listener touches it directly, so a
-        // synchronous insets dispatch during onCreate would otherwise dereference null.
+        calibrationOverlayView.setListener(new CalibrationOverlayView.Listener() {
+            @Override
+            public void onConfirmed(CameraCalibration confirmed) {
+                confirmInstallationCalibration(confirmed);
+            }
+
+            @Override
+            public void onCancelled() {
+                hideCalibrationOverlay();
+            }
+
+            @Override
+            public void onValidityChanged(boolean valid) {
+                calibrationConfirmView.setEnabled(valid);
+                calibrationConfirmView.setAlpha(valid ? 1.0f : 0.45f);
+            }
+        });
+        // One safe viewport for preview, boxes, calibration lines and controls. This also handles
+        // landscape side navigation bars and cutouts without shifting overlays away from the image.
         content.setOnApplyWindowInsetsListener((view, insets) -> {
-            Insets navBars = insets.getInsets(WindowInsets.Type.navigationBars());
-            Insets systemBars = insets.getInsets(WindowInsets.Type.systemBars());
-            int bottom = Math.max(navBars.bottom, systemBars.bottom);
-            overlayView.setBottomInset(bottom);
-            applyBottomHudInset(bottom);
+            Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout());
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
             return insets;
         });
         content.requestApplyInsets();
@@ -196,6 +212,7 @@ public final class MainActivity extends Activity {
         }
         overlayView.setCalibration(calibration, calibrationStatus);
         simulationButton.setOnClickListener(view -> showSimulationDialog());
+        settingsButton.setVisibility(View.GONE);
         locationManager = getSystemService(LocationManager.class);
         try {
             alertAudio = new AlertAudio(this);
@@ -323,9 +340,7 @@ public final class MainActivity extends Activity {
                         updateCameraStatus(getString(connected ? R.string.camera_opened
                                 : R.string.camera_disconnected), !connected);
                         if (connected && simulationSnapshot == null) {
-                            // Rebind the calibration to the camera that actually opened: the same
-                            // 1280x720 geometry from a different sensor would otherwise be inherited.
-                            reloadCalibrationForCamera();
+                            reloadCalibration();
                         }
                     }
                     public void onDeviceDetached(UsbDevice device) {
@@ -337,11 +352,22 @@ public final class MainActivity extends Activity {
                     }
                 });
         previewView.addOnLayoutChangeListener((view, l, t, r, b, oldL, oldT, oldR, oldB) -> {
-            Analysis analysis = latestAnalysis;
-            if (analysis != null) {
-                fitPreview(analysis.detections());
-            }
+            // A resize changes the transform pivot even if the scale is unchanged.
+            appliedScaleX = Float.NaN;
+            appliedScaleY = Float.NaN;
+            fitCurrentPreview();
         });
+    }
+
+    @Override
+    public void onUserInteraction() {
+        super.onUserInteraction();
+        if (calibrationOverlayContainer == null
+                || calibrationOverlayContainer.getVisibility() != View.VISIBLE) {
+            settingsButton.setVisibility(View.VISIBLE);
+            hudHandler.removeCallbacks(hideHudControls);
+            hudHandler.postDelayed(hideHudControls, 2_500L);
+        }
     }
 
     /** Camera callbacks run on the main thread; real capture cannot reset a simulated session. */
@@ -351,6 +377,7 @@ public final class MainActivity extends Activity {
             return;
         }
         if (resetResults) {
+            hideCalibrationOverlay();
             clearResults();
         }
         setStatusText(text, true);
@@ -361,25 +388,6 @@ public final class MainActivity extends Activity {
         boolean hide = hideWhenCameraReady
                 && getString(R.string.camera_opened).contentEquals(text);
         statusView.setVisibility(hide ? View.GONE : View.VISIBLE);
-    }
-
-    /** Keeps every persistent bottom HUD element above gesture and three-button navigation bars. */
-    private void applyBottomHudInset(int insetPx) {
-        int bottomMargin = baseBottomHudMarginPx + Math.max(0, insetPx);
-        setBottomMargin(speedPanel, bottomMargin);
-        setBottomMargin(settingsButton, bottomMargin);
-    }
-
-    private static void setBottomMargin(View view, int bottomMargin) {
-        if (view == null) {
-            return;
-        }
-        ViewGroup.MarginLayoutParams params =
-                (ViewGroup.MarginLayoutParams) view.getLayoutParams();
-        if (params.bottomMargin != bottomMargin) {
-            params.bottomMargin = bottomMargin;
-            view.setLayoutParams(params);
-        }
     }
 
     private void hideSystemStatusBar() {
@@ -537,19 +545,20 @@ public final class MainActivity extends Activity {
         Analysis analysis = latestAnalysis;
         updateClockAndSpeed(analysis);
         VehicleDetector.Result result = analysis == null ? null : analysis.detections();
-        updateCalibrationStatus(result);
+        fitCurrentPreview();
+        if (pendingCalibration != null) {
+            calibrationOverlayView.setPreviewAvailable(calibrationFrameMatches(currentCalibrationFrame()));
+        }
         boolean fresh = result != null && (simulator.isRunning()
                 || (result.timestampNanos() >= acceptFramesAfterNanos
                 && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
         RuntimeException modelFailure = initializationFailure != null
                 ? initializationFailure : detectorFailure;
-        String workerError = modelFailure == null
-                ? workerSnapshot.lastError() : modelFailure.getMessage();
-        if (!simulator.isRunning() && !workerError.isEmpty()) {
+        boolean workerFailed = modelFailure != null || !workerSnapshot.lastError().isEmpty();
+        if (!simulator.isRunning() && workerFailed) {
             updateRuntimeStatus("前车检测暂不可用");
             overlayView.setResult(null, null);
         } else if (fresh) {
-            fitPreview(result);
             AdasDecisionEngine.Decision shown = displayDecision(analysis, now);
             overlayView.setResult(result, analysis.tracking(), analysis.lane(),
                     analysis.laneGeometry(), shown, analysis.motion().visible(),
@@ -598,7 +607,7 @@ public final class MainActivity extends Activity {
                 ? (validSpeedKmh() ? egoSpeedKmh : Double.NaN)
                 : displaySpeedKmh(analysis);
         speedView.setText(Double.isFinite(speed)
-                ? String.format(Locale.ROOT, "%.0f", speed) : "--");
+                ? String.format(Locale.ROOT, "%.0f km/h", speed) : "-- km/h");
     }
 
 
@@ -761,30 +770,6 @@ public final class MainActivity extends Activity {
         }
     };
 
-    private void updateCalibrationStatus(VehicleDetector.Result result) {
-        boolean distanceProfileReady = calibrationStatus == CalibrationStore.Status.DISTANCE_READY
-                || calibrationStatus == CalibrationStore.Status.WIZARD_COMPLETED
-                || calibrationStatus == CalibrationStore.Status.CALIBRATED;
-        boolean setupRequired = calibration == null || !distanceProfileReady;
-        boolean sizeMismatch = !setupRequired && result != null
-                && !calibration.isUsableFor(result.frameWidth(), result.frameHeight());
-        if (setupRequired) {
-            showSetupPrompt("需要完成安装设置",
-                    "设置车辆类型、镜头视野和安装俯仰角后启用距离预警");
-        } else if (sizeMismatch) {
-            showSetupPrompt("摄像头配置已变化",
-                    "当前分辨率与已保存配置不一致，请重新完成安装设置");
-        } else {
-            setupPromptView.setVisibility(View.GONE);
-        }
-    }
-
-    private void showSetupPrompt(String title, String detail) {
-        setupPromptTitleView.setText(title);
-        setupPromptDetailView.setText(detail);
-        setupPromptView.setVisibility(View.VISIBLE);
-    }
-
     /** Configured pitch is available to the learner before calibration has converged. */
     private double learningPitchDegrees(int frameWidth, int frameHeight) {
         CameraCalibration active = calibration;
@@ -825,9 +810,9 @@ public final class MainActivity extends Activity {
             return;
         }
         previousProcessedTimestampNanos = result.timestampNanos();
-        LeadVehicleTracker.Snapshot tracking = tracker.update(result, lane);
         CameraCalibration activeCalib = AdasCalibrationMode.distanceReady(calibrationStatus,
                 calibration, result.frameWidth(), result.frameHeight()) ? calibration : null;
+        LeadVehicleTracker.Snapshot tracking = tracker.update(result, lane, activeCalib);
         boolean persistCalibration = !simulationFrame;
         CameraCalibration learningCalibration = calibration;
         if (AdasCalibrationMode.LDW_ENABLED && learningCalibration != null
@@ -843,8 +828,7 @@ public final class MainActivity extends Activity {
                 activeCalib = step.status() == CalibrationStore.Status.CALIBRATED
                         ? step.calibration() : null;
                 if (persistCalibration) {
-                    String currentId = cameraSource != null ? cameraSource.currentCameraId() : "";
-                    calibrationStore.save(step.calibration(), step.status(), step.progressPercent(), currentId);
+                    calibrationStore.save(step.calibration(), step.status(), step.progressPercent());
                 }
                 postCalibrationOverlay(frameGeneration);
             } else if (step.status() != calibrationStatus || step.progressPercent() != calibrationProgress) {
@@ -1043,8 +1027,7 @@ public final class MainActivity extends Activity {
         int height = analysis == null ? 720 : analysis.detections().frameHeight();
 
         if (simulationSnapshot == null) {
-            simulationSnapshot = new SimulationSnapshot(calibration, calibrationStatus,
-                    cameraSource == null ? "" : cameraSource.currentCameraId());
+            simulationSnapshot = new SimulationSnapshot(calibration, calibrationStatus);
         }
         // Synthetic boxes use this fixture, independent of the real camera's saved calibration.
         calibration = CameraCalibration.fromWizard(width, height, HEIGHT_SEDAN_METERS, 90.0,
@@ -1087,35 +1070,11 @@ public final class MainActivity extends Activity {
             return;
         }
         simulationSnapshot = null;
-        String currentCameraId = cameraSource == null ? "" : cameraSource.currentCameraId();
-        boolean sameCamera = !snapshot.cameraId().isEmpty()
-                && snapshot.cameraId().equals(currentCameraId);
-        if (sameCamera) {
-            calibration = snapshot.calibration();
-            calibrationStatus = snapshot.status();
-            autoCalibrationLearner.reset(calibrationStatus);
-            calibrationProgress = autoCalibrationLearner.progress();
-            calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
-        } else {
-            // Never restore a simulation's pre-existing calibration to another or unidentified
-            // camera. A stable camera may load only its own persisted record; an unidentified camera
-            // stays uncalibrated and drops stale storage.
-            calibration = null;
-            calibrationStatus = CalibrationStore.Status.UNCONFIGURED;
-            calibrationProgress = 0;
-            autoCalibrationLearner.reset(calibrationStatus);
-            if (currentCameraId.isEmpty()) {
-                calibrationStore.clear();
-            } else {
-                CameraCalibration stored = calibrationStore.load(currentCameraId);
-                if (stored != null) {
-                    calibration = stored;
-                    calibrationStatus = calibrationStore.loadStatus();
-                    calibrationProgress = calibrationStore.loadProgress();
-                    autoCalibrationLearner.reset(calibrationStatus);
-                }
-            }
-        }
+        calibration = snapshot.calibration();
+        calibrationStatus = snapshot.status();
+        autoCalibrationLearner.reset(calibrationStatus);
+        calibrationProgress = autoCalibrationLearner.progress();
+        calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
         clearResults();
         overlayView.setCalibration(calibration, calibrationStatus);
         setStatusText(cameraStatusText == null
@@ -1126,53 +1085,50 @@ public final class MainActivity extends Activity {
         showCalibrationDialog();
     }
 
+    public void confirmCalibrationOverlay(View view) {
+        calibrationOverlayView.setPreviewAvailable(calibrationFrameMatches(currentCalibrationFrame()));
+        calibrationOverlayView.confirm();
+    }
+
+    public void cancelCalibrationOverlay(View view) {
+        calibrationOverlayView.cancel();
+    }
+
     private void showCalibrationDialog() {
-        if (simulator.isRunning()) {
-            Toast.makeText(this, "请先停止模拟再修改安装配置", Toast.LENGTH_SHORT).show();
+        if (settingsDialog != null || pendingCalibration != null) {
             return;
         }
-        Analysis analysis = latestAnalysis;
-        int width = analysis == null ? 1280 : analysis.detections().frameWidth();
-        int height = analysis == null ? 720 : analysis.detections().frameHeight();
+        if (simulator.isRunning()) {
+            Toast.makeText(this, "请先停止模拟", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        UsbCameraSource.PreviewSnapshot frame = currentCalibrationFrame();
 
-        View content = getLayoutInflater().inflate(R.layout.dialog_install_wizard, null);
-        RadioGroup vehicleGroup = content.findViewById(R.id.vehicle_group);
+        View content = getLayoutInflater().inflate(R.layout.dialog_adas_settings, null);
         RadioButton rbSedan = content.findViewById(R.id.rb_sedan);
         RadioButton rbSuv = content.findViewById(R.id.rb_suv);
         RadioButton rbTruck = content.findViewById(R.id.rb_truck);
-        RadioButton rbCustom = content.findViewById(R.id.rb_custom);
-        EditText customHeightField = content.findViewById(R.id.custom_height_field);
-        RadioGroup fovGroup = content.findViewById(R.id.fov_group);
         RadioButton rb90 = content.findViewById(R.id.rb_fov_90);
         RadioButton rb100 = content.findViewById(R.id.rb_fov_100);
         RadioButton rb120 = content.findViewById(R.id.rb_fov_120);
-        SeekBar pitchSeekBar = content.findViewById(R.id.pitch_seekbar);
-        TextView pitchValue = content.findViewById(R.id.pitch_value);
-        TextView resolutionValue = content.findViewById(R.id.resolution_value);
-        TextView cameraIdValue = content.findViewById(R.id.camera_id_value);
+        TextView calibrationStatusView = content.findViewById(R.id.calibration_status);
+        View calibrationAction = content.findViewById(R.id.calibration_action);
 
         rbSedan.setChecked(true);
         if (calibration != null) {
             double cameraHeight = calibration.cameraHeightMeters();
-            if (Math.abs(cameraHeight - HEIGHT_SEDAN_METERS) < 0.05) {
-                rbSedan.setChecked(true);
-            } else if (Math.abs(cameraHeight - HEIGHT_SUV_METERS) < 0.05) {
+            if (Math.abs(cameraHeight - HEIGHT_SUV_METERS) < 0.05) {
                 rbSuv.setChecked(true);
             } else if (Math.abs(cameraHeight - HEIGHT_TRUCK_METERS) < 0.05) {
                 rbTruck.setChecked(true);
-            } else {
-                rbCustom.setChecked(true);
-                customHeightField.setVisibility(View.VISIBLE);
-                customHeightField.setText(Double.toString(cameraHeight));
             }
         }
-        vehicleGroup.setOnCheckedChangeListener((group, checkedId) ->
-                customHeightField.setVisibility(checkedId == R.id.rb_custom ? View.VISIBLE : View.GONE));
 
         rb90.setChecked(true);
-        if (calibration != null && calibration.isUsableFor(width, height)) {
+        if (calibration != null) {
             double currentFov = Math.toDegrees(2.0 * Math.atan(
-                    (width / 2.0) / (calibration.focalLengthYNormalized() * height)));
+                    (calibration.imageWidth() / 2.0)
+                            / (calibration.focalLengthYNormalized() * calibration.imageHeight())));
             if (Math.abs(currentFov - 120.0) < Math.abs(currentFov - 100.0)
                     && Math.abs(currentFov - 120.0) < Math.abs(currentFov - 90.0)) {
                 rb120.setChecked(true);
@@ -1181,92 +1137,118 @@ public final class MainActivity extends Activity {
             }
         }
 
-        double pitchToShow = calibration != null && calibration.isUsableFor(width, height)
-                ? calibration.pitchDegrees() : INITIAL_PITCH_DEGREES;
-        pitchSeekBar.setProgress(pitchProgress(pitchToShow));
-        pitchValue.setText(formatPitchDegrees(pitchDegrees(pitchSeekBar.getProgress())));
-        pitchSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                pitchValue.setText(formatPitchDegrees(pitchDegrees(progress)));
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-            }
-        });
-
-        String cameraId = cameraSource == null ? "" : cameraSource.currentCameraId();
-        resolutionValue.setText("当前画面：" + width + " × " + height);
-        cameraIdValue.setText("摄像头序列号："
-                + (cameraId.isEmpty() ? "未识别（需支持序列号的 USB 摄像头）" : cameraId));
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+        calibrationStatusView.setText(calibration == null ? "未校准"
+                : frame == null ? "待连接"
+                : AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
+                        frame.frameWidth(), frame.frameHeight()) ? "已校准" : "需校准");
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(content)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存并启用", null);
-        if (calibrationStatus != CalibrationStore.Status.UNCONFIGURED) {
-            builder.setNeutralButton("重置配置", (dialog, which) -> {
-                applyCameraCalibration(null);
-                Toast.makeText(this, "已清除安装配置", Toast.LENGTH_SHORT).show();
-            });
-        }
-
-        AlertDialog dialog = builder.create();
+                .setNegativeButton("关闭", null)
+                .create();
+        settingsDialog = dialog;
+        dialog.setOnDismissListener(ignored -> settingsDialog = null);
+        calibrationAction.setOnClickListener(view -> {
+            UsbCameraSource.PreviewSnapshot currentFrame = currentCalibrationFrame();
+            if (currentFrame == null) {
+                Toast.makeText(this, "请等待实时摄像头画面", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            double heightMeters = rbSuv.isChecked() ? HEIGHT_SUV_METERS
+                    : rbTruck.isChecked() ? HEIGHT_TRUCK_METERS : HEIGHT_SEDAN_METERS;
+            double hfov = rb120.isChecked() ? 120.0 : rb100.isChecked() ? 100.0 : 90.0;
+            CameraCalibration previous = calibration;
+            boolean sameSize = previous != null && previous.isUsableFor(
+                    currentFrame.frameWidth(), currentFrame.frameHeight());
+            // Always build with the newly selected lens. Preview and confirmation share this draft.
+            CameraCalibration lens = CameraCalibration.fromWizard(currentFrame.frameWidth(),
+                    currentFrame.frameHeight(), heightMeters, hfov,
+                    sameSize ? previous.pitchDegrees() : INITIAL_PITCH_DEGREES);
+            pendingCalibration = new CameraCalibration(lens.imageWidth(), lens.imageHeight(),
+                    lens.cameraHeightMeters(), lens.focalLengthYNormalized(),
+                    lens.principalPointYNormalized(), lens.pitchDegrees(),
+                    sameSize ? previous.guideCenterXNormalized() : 0.5);
+            pendingCalibrationGeneration = resultsGeneration;
+            pendingCalibrationSession = currentFrame.sessionId();
+            fitPreview(currentFrame.frameWidth(), currentFrame.frameHeight());
+            dialog.dismiss();
+            showCalibrationOverlay();
+        });
         dialog.setOnShowListener(ignored -> {
             Window window = dialog.getWindow();
             if (window != null) {
-                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                 window.setBackgroundDrawable(new ColorDrawable(0x00000000));
+                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                window.setGravity(Gravity.CENTER);
+                window.setWindowAnimations(0);
                 int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                int maxWidth = (int) (720 * getResources().getDisplayMetrics().density);
-                window.setLayout(Math.min(maxWidth, (int) (screenWidth * 0.94f)),
+                int maxWidth = (int) (380 * getResources().getDisplayMetrics().density);
+                window.setLayout(Math.min(maxWidth, (int) (screenWidth * 0.88f)),
                         WindowManager.LayoutParams.WRAP_CONTENT);
             }
-            Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            positive.setTextColor(0xFF65D6C5);
-            positive.setOnClickListener(view -> {
-                try {
-                    double heightMeters;
-                    if (rbCustom.isChecked()) {
-                        heightMeters = parse(customHeightField);
-                    } else if (rbSuv.isChecked()) {
-                        heightMeters = HEIGHT_SUV_METERS;
-                    } else if (rbTruck.isChecked()) {
-                        heightMeters = HEIGHT_TRUCK_METERS;
-                    } else {
-                        heightMeters = HEIGHT_SEDAN_METERS;
-                    }
-                    double hfov = rb120.isChecked() ? 120.0 : (rb100.isChecked() ? 100.0 : 90.0);
-                    double initialPitch = pitchDegrees(pitchSeekBar.getProgress());
-                    CameraCalibration next = CameraCalibration.fromWizard(
-                            width, height, heightMeters, hfov, initialPitch);
-                     String activeCameraId = cameraSource == null ? "" : cameraSource.currentCameraId();
-                     if (activeCameraId.isEmpty()) {
-                         throw new IllegalStateException(
-                                 "摄像头没有可用序列号，请连接支持序列号的 USB 摄像头后重试");
-                     }
-                    applyCameraCalibration(next);
-                    dialog.dismiss();
-                    Toast.makeText(this, "安装配置已保存，前车距离预警已启用",
-                            Toast.LENGTH_LONG).show();
-                } catch (RuntimeException failure) {
-                    Toast.makeText(this, "请检查配置：" + failure.getMessage(),
-                            Toast.LENGTH_LONG).show();
-                }
-            });
             Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
             negative.setTextColor(0xFF9AA5B1);
-            Button neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
-            if (neutral != null) {
-                neutral.setTextColor(0xFFFF8A80);
-            }
         });
         dialog.show();
+    }
+
+    private void showCalibrationOverlay() {
+        calibrationOverlayView.setCalibration(pendingCalibration);
+        calibrationOverlayView.setPreviewAvailable(calibrationFrameMatches(currentCalibrationFrame()));
+        calibrationOverlayContainer.setVisibility(View.VISIBLE);
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT, cancelCalibrationOnBack);
+        hudHandler.removeCallbacks(hideHudControls);
+        settingsButton.setVisibility(View.GONE);
+        simulationButton.setVisibility(View.GONE);
+        overlayView.setVisibility(View.INVISIBLE);
+        findViewById(R.id.top_info).setVisibility(View.INVISIBLE);
+        speedPanel.setVisibility(View.INVISIBLE);
+    }
+
+    private void hideCalibrationOverlay() {
+        if (calibrationOverlayContainer.getVisibility() == View.VISIBLE) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(cancelCalibrationOnBack);
+        }
+        pendingCalibration = null;
+        calibrationOverlayView.setPreviewAvailable(false);
+        calibrationOverlayContainer.setVisibility(View.GONE);
+        settingsButton.setVisibility(View.GONE);
+        simulationButton.setVisibility(BuildConfig.DEBUG ? View.VISIBLE : View.GONE);
+        overlayView.setVisibility(View.VISIBLE);
+        findViewById(R.id.top_info).setVisibility(View.VISIBLE);
+        speedPanel.setVisibility(View.VISIBLE);
+    }
+
+    private synchronized void confirmInstallationCalibration(CameraCalibration next) {
+        if (!calibrationFrameMatches(currentCalibrationFrame())) {
+            calibrationOverlayView.setPreviewAvailable(false);
+            Toast.makeText(this, "画面已变化，请重新校准", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        applyCameraCalibration(next);
+        hideCalibrationOverlay();
+        Toast.makeText(this, "ADAS 校准已保存", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Use only a real, fresh frame; never guess 720p when the stream is not available. */
+    private UsbCameraSource.PreviewSnapshot currentCalibrationFrame() {
+        if (!started || simulator.isRunning() || !previewView.isAvailable()) {
+            return null;
+        }
+        UsbCameraSource.PreviewSnapshot frame = cameraSource.previewSnapshot();
+        if (frame == null) {
+            return null;
+        }
+        long age = System.nanoTime() - frame.timestampNanos();
+        return frame.timestampNanos() >= acceptFramesAfterNanos && age >= 0L
+                && age <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS ? frame : null;
+    }
+
+    private boolean calibrationFrameMatches(UsbCameraSource.PreviewSnapshot frame) {
+        return pendingCalibration != null && frame != null
+                && pendingCalibrationGeneration == resultsGeneration
+                && pendingCalibrationSession == frame.sessionId()
+                && pendingCalibration.isUsableFor(frame.frameWidth(), frame.frameHeight());
     }
 
     private synchronized void applyCameraCalibration(CameraCalibration next) {
@@ -1276,81 +1258,21 @@ public final class MainActivity extends Activity {
         calibrationProgress = next == null ? 0 : 100;
         autoCalibrationLearner.reset(calibrationStatus);
         clearResults();
-        String currentId = cameraSource != null ? cameraSource.currentCameraId() : "";
         if (next == null) {
             calibrationStore.clear();
         } else {
-            calibrationStore.save(next, calibrationStatus, calibrationProgress, currentId);
+            calibrationStore.save(next, calibrationStatus, calibrationProgress);
         }
         overlayView.setCalibration(calibration, calibrationStatus);
-        updateCalibrationStatus(null);
     }
 
-    /**
-     * Rebinds calibration state once a camera has actually opened. A stored calibration without a
-     * recorded camera id cannot be attributed to the device on the other end of the cable, so it is
-     * treated as unbound and dropped rather than adopted: keeping it would silently apply one
-     * camera's pitch to another. This project is still in its test phase, so the resulting one-off
-     * re-calibration on upgrade is accepted instead of migrating the old record; see
-     * {@code CalibrationStore} for that note. A connected camera without a stable serial is also
-     * fail-closed: its metric calibration is cleared because the next attachment could be a
-     * different identical UVC device.
-     */
-    private synchronized void reloadCalibrationForCamera() {
-        String currentId = cameraSource == null ? "" : cameraSource.currentCameraId();
-        if (currentId.isEmpty()) {
-            if (calibration != null || calibrationStatus != CalibrationStore.Status.UNCONFIGURED) {
-                Log.w(TAG, "[CALIB] Camera has no stable serial; invalidating metric calibration");
-                applyCameraCalibration(null);
-            }
-            return;
-        }
-        CameraCalibration stored = calibrationStore.load(currentId);
-        if (stored != null) {
-            calibration = stored;
-            calibrationStatus = calibrationStore.loadStatus();
-            calibrationProgress = calibrationStore.loadProgress();
-            autoCalibrationLearner.reset(calibrationStatus);
-            overlayView.setCalibration(calibration, calibrationStatus);
-            updateCalibrationStatus(null);
-            return;
-        }
-        String storedId = calibrationStore.storedCameraId();
-        if (storedId.isEmpty() && calibration != null) {
-            Log.w(TAG, "[CALIB] Calibration has no camera id; invalidating it for " + currentId);
-        } else if (calibration != null) {
-            Log.w(TAG, "[CALIB] Camera changed to " + currentId + " (stored " + storedId
-                    + "), invalidating old calibration");
-        }
-        if (calibration != null) {
-            applyCameraCalibration(null);
-        }
-    }
-
-    private static double parse(EditText field) {
-        String value = field.getText().toString().trim();
-        if (value.isEmpty()) {
-            throw new IllegalArgumentException("参数不能为空");
-        }
-        return Double.parseDouble(value);
-    }
-
-    private static int pitchProgress(double pitchDegrees) {
-        if (!Double.isFinite(pitchDegrees)) {
-            pitchDegrees = INITIAL_PITCH_DEGREES;
-        }
-        double clamped = Math.max(MIN_INITIAL_PITCH_DEGREES,
-                Math.min(MAX_INITIAL_PITCH_DEGREES, pitchDegrees));
-        return (int) Math.round((clamped - MIN_INITIAL_PITCH_DEGREES) / PITCH_STEP_DEGREES);
-    }
-
-    private static double pitchDegrees(int progress) {
-        int safeProgress = Math.max(0, Math.min(PITCH_STEPS, progress));
-        return MIN_INITIAL_PITCH_DEGREES + safeProgress * PITCH_STEP_DEGREES;
-    }
-
-    private static String formatPitchDegrees(double pitchDegrees) {
-        return String.format(Locale.ROOT, "%.1f°", pitchDegrees);
+    /** Reloads the resolution-bound installation profile after the camera stream opens. */
+    private synchronized void reloadCalibration() {
+        calibration = calibrationStore.load();
+        calibrationStatus = calibrationStore.loadStatus();
+        calibrationProgress = calibrationStore.loadProgress();
+        autoCalibrationLearner.reset(calibrationStatus);
+        overlayView.setCalibration(calibration, calibrationStatus);
     }
 
     /**
@@ -1358,14 +1280,21 @@ public final class MainActivity extends Activity {
      * size or the frame size changes, so identical inputs are skipped: this runs from the 250 ms
      * metrics tick and a redundant setTransform would invalidate the view four times a second.
      */
-    private void fitPreview(VehicleDetector.Result result) {
-        if (result == null || previewView.getWidth() == 0 || previewView.getHeight() == 0) {
+    private void fitCurrentPreview() {
+        UsbCameraSource.PreviewSnapshot frame = cameraSource.previewSnapshot();
+        if (frame != null) {
+            fitPreview(frame.frameWidth(), frame.frameHeight());
+        }
+    }
+
+    private void fitPreview(int frameWidth, int frameHeight) {
+        if (previewView.getWidth() == 0 || previewView.getHeight() == 0) {
             return;
         }
-        float scale = Math.min((float) previewView.getWidth() / result.frameWidth(),
-                (float) previewView.getHeight() / result.frameHeight());
-        float scaleX = result.frameWidth() * scale / previewView.getWidth();
-        float scaleY = result.frameHeight() * scale / previewView.getHeight();
+        CalibrationAlignment.Viewport viewport = CalibrationAlignment.fitCenter(
+                previewView.getWidth(), previewView.getHeight(), frameWidth, frameHeight);
+        float scaleX = (float) (viewport.width() / previewView.getWidth());
+        float scaleY = (float) (viewport.height() / previewView.getHeight());
         if (appliedScaleX == scaleX && appliedScaleY == scaleY) {
             return;
         }
@@ -1423,6 +1352,11 @@ public final class MainActivity extends Activity {
      */
     @Override
     protected void onStop() {
+        if (settingsDialog != null) {
+            settingsDialog.dismiss();
+        }
+        hideCalibrationOverlay();
+        hudHandler.removeCallbacks(hideHudControls);
         synchronized (this) {
             started = false;
             simulator.stop();
@@ -1438,6 +1372,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        hudHandler.removeCallbacks(hideHudControls);
         simulator.stop();
         metricsHandler.removeCallbacks(metricsUpdater);
         cameraSource.close();

@@ -21,7 +21,6 @@ import com.serenegiant.usb.UVCCamera;
 
 import java.nio.ByteBuffer;
 import java.util.Comparator;
-import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -63,6 +62,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private volatile boolean previewActive;
     private volatile long previewStartedNanos;
     private volatile long lastFrameNanos;
+    private volatile PreviewSnapshot latestPreviewSnapshot;
     private volatile long openingStartedNanos;
     private boolean streamConfirmed;
     private UsbDevice selectedDevice;
@@ -70,6 +70,16 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     // The camera thread exclusively owns these native resources.
     private UVCCamera camera;
     private USBMonitor monitor;
+    private USBMonitor.UsbControlBlock controlBlock;
+
+    /** Validated capture metadata, independent of model initialization and inference. */
+    public record PreviewSnapshot(int frameWidth, int frameHeight, long timestampNanos,
+                                  int sessionId) { }
+
+    public PreviewSnapshot previewSnapshot() {
+        PreviewSnapshot snapshot = latestPreviewSnapshot;
+        return snapshot != null && isCurrent(snapshot.sessionId()) ? snapshot : null;
+    }
 
     /** Preview modes are tried from the preferred analysis size down to broadly supported UVC modes. */
     static final class PreviewConfig {
@@ -93,18 +103,6 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                 new PreviewConfig(640, 480, UVCCamera.FRAME_FORMAT_YUYV),
                 new PreviewConfig(320, 240, UVCCamera.FRAME_FORMAT_YUYV),
         };
-    }
-
-    static String buildCameraId(int vendorId, int productId, String serial, String deviceName) {
-        String normalizedSerial = serial == null ? "" : serial.trim();
-        if (!normalizedSerial.isEmpty()) {
-            return String.format(Locale.US, "usb:%d:%d:serial:%s", vendorId, productId,
-                    normalizedSerial);
-        }
-        // Device paths and USB addresses can be reused after unplug/replug. Never persist them as
-        // calibration identities, and never fall back to VID/PID alone: identical UVC devices
-        // could otherwise share calibration. The caller will remain unbound until re-calibration.
-        return "";
     }
 
     static boolean surfaceTextureDestroyedReturnValue() {
@@ -301,7 +299,8 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             // Use only the control-block bridge; do not call the old monitor.register().
             monitor = new USBMonitor(activity.getApplicationContext(), NO_MONITOR_CALLBACKS);
             camera = new UVCCamera();
-            camera.open(monitor.openDevice(device));
+            controlBlock = monitor.openDevice(device);
+            camera.open(controlBlock);
             PreviewConfig preview = configurePreview(camera);
             int width = preview.width;
             int height = preview.height;
@@ -337,6 +336,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                         return;
                     }
                     lastFrameNanos = now;
+                    latestPreviewSnapshot = new PreviewSnapshot(frameWidth, frameHeight, now, token);
                     dispatcher.offer(nv21, frameWidth, frameHeight, now);
                 }
                 if (receivedFrame.compareAndSet(false, true)) {
@@ -368,10 +368,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             Log.e(TAG, "USB camera open failed", failure);
             mainHandler.post(() -> {
                 if (isCurrent(token)) {
-                    opening = false;
-                    previewActive = false;
+                    int retryToken = invalidatePreview();
                     listener.onError("USB 摄像头打开失败: " + failure.getClass().getSimpleName());
-                    scheduleOpenRetry(token);
+                    scheduleOpenRetry(retryToken);
                 }
             });
         }
@@ -393,6 +392,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         previewStartedNanos = 0L;
         synchronized (dispatcher) {
             lastFrameNanos = 0L;
+            latestPreviewSnapshot = null;
             dispatcher.discardPending();
         }
         return token;
@@ -428,21 +428,6 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         return invalidFrames.get();
     }
 
-    public synchronized String currentCameraId() {
-        UsbDevice device = selectedDevice;
-        if (device == null) {
-            return "";
-        }
-        String serial = "";
-        try {
-            serial = device.getSerialNumber();
-        } catch (RuntimeException unavailable) {
-            // Access to the serial is permission-gated on some Android builds. The device path
-            // is intentionally not persisted because USB addresses can be reused.
-        }
-        return buildCameraId(device.getVendorId(), device.getProductId(), serial,
-                device.getDeviceName());
-    }
     /** Allows the foreground UI to retry after the bounded automatic retries are exhausted. */
     public void retryOpen() {
         if (!running || closed || opening) {
@@ -490,6 +475,17 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                 Log.w(TAG, "Camera release failed", failure);
             } finally {
                 camera = null;
+            }
+        }
+        // UVCCamera owns a clone. Closing that clone removes the monitor's original block from
+        // its map, so monitor.destroy() alone cannot reliably release the original connection.
+        if (controlBlock != null) {
+            try {
+                controlBlock.close();
+            } catch (RuntimeException | LinkageError failure) {
+                Log.w(TAG, "USB connection release failed", failure);
+            } finally {
+                controlBlock = null;
             }
         }
         if (monitor != null) {

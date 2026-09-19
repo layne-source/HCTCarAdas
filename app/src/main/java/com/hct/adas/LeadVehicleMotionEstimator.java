@@ -15,6 +15,9 @@ public final class LeadVehicleMotionEstimator {
     private double filteredSpeed;
     private boolean initialized;
     private boolean velocityInitialized;
+    private boolean hasInitialSpeed;
+    private double initialRawSpeed;
+    private double initialSpeedInterval;
     private CameraCalibration previousCalibration;
     public Measurement update(LeadVehicleTracker.Snapshot snapshot,
                               CameraCalibration calibration, int width, int height) {
@@ -46,6 +49,7 @@ public final class LeadVehicleMotionEstimator {
             filteredDistance = distance;
             filteredSpeed = 0.0;
             velocityInitialized = false;
+            hasInitialSpeed = false;
             previousRawDistance = distance;
             initialized = true;
         } else {
@@ -54,16 +58,31 @@ public final class LeadVehicleMotionEstimator {
             previousRawDistance = distance;
             if (!Double.isFinite(rawSpeed)) {
                 rawSpeed = 0.0;
-            } else if (!velocityInitialized) {
-                filteredSpeed = Math.max(-50.0, Math.min(50.0, rawSpeed));
-                velocityInitialized = true;
-                rawSpeed = filteredSpeed;
+            }
+            if (!velocityInitialized) {
+                // The first delta is provisional so a real fast approach is visible promptly.
+                // Only consistent consecutive raw deltas may seed the acceleration limiter;
+                // otherwise a box jump/rebound would be held as motion for multiple alert frames.
+                if (!hasInitialSpeed) {
+                    filteredSpeed = rawSpeed;
+                    hasInitialSpeed = true;
+                } else {
+                    double midpointInterval = (initialSpeedInterval + dt) * 0.5;
+                    boolean consistent = Math.signum(initialRawSpeed) == Math.signum(rawSpeed)
+                            && Math.abs(rawSpeed - initialRawSpeed)
+                            <= MAX_RELATIVE_ACCEL_MPS2 * midpointInterval;
+                    filteredSpeed = consistent
+                            ? (initialRawSpeed * initialSpeedInterval + rawSpeed * dt)
+                                    / (initialSpeedInterval + dt) : 0.0;
+                    velocityInitialized = consistent;
+                }
+                initialRawSpeed = rawSpeed;
+                initialSpeedInterval = dt;
+                filteredSpeed = Math.max(-50.0, Math.min(50.0, filteredSpeed));
             } else {
                 // Reject single-frame box jitter: clamp to realistic vehicle acceleration limit
                 double maxSpeedChange = MAX_RELATIVE_ACCEL_MPS2 * dt;
                 rawSpeed = Math.max(filteredSpeed - maxSpeedChange, Math.min(filteredSpeed + maxSpeedChange, rawSpeed));
-            }
-            if (velocityInitialized) {
                 filteredSpeed += SPEED_ALPHA * (rawSpeed - filteredSpeed);
             }
             filteredDistance += DISTANCE_ALPHA * (distance - filteredDistance);
@@ -84,6 +103,7 @@ public final class LeadVehicleMotionEstimator {
         filteredDistance = Double.NaN;
         filteredSpeed = 0.0;
         velocityInitialized = false;
+        hasInitialSpeed = false;
         previousCalibration = null;
     }
 

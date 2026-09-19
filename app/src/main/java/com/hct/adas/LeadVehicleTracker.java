@@ -47,6 +47,12 @@ public final class LeadVehicleTracker {
      * tracked vehicle disappear, and the legacy trapezoid remains the fallback before calibration.
      */
     public Snapshot update(VehicleDetector.Result frame, LaneDepartureDetector.Observation lane) {
+        return update(frame, lane, null);
+    }
+
+    /** The confirmed installation horizon sets search depth; the visual guide is not camera yaw. */
+    public Snapshot update(VehicleDetector.Result frame, LaneDepartureDetector.Observation lane,
+                           CameraCalibration calibration) {
         long now = frame.timestampNanos();
         if (latest != null && now <= latest.timestampNanos()) {
             return latest;
@@ -56,6 +62,12 @@ public final class LeadVehicleTracker {
             frameWidth = frame.frameWidth();
             frameHeight = frame.frameHeight();
         }
+        float regionTop = calibration != null
+                && calibration.isUsableFor(frameWidth, frameHeight)
+                ? (float) calibration.horizonYNormalized() : REGION_TOP;
+        if (regionTop >= 1f) {
+            regionTop = REGION_TOP;
+        }
         if (target != null && now - lastSeenNanos > MAX_OBSERVATION_GAP_NANOS) {
             target = null;
             targetId = 0L;
@@ -63,7 +75,7 @@ public final class LeadVehicleTracker {
 
         VehicleDetector.Detection current = null;
         if (target != null) {
-            Match match = findMatch(frame.vehicles());
+            Match match = findMatch(frame.vehicles(), regionTop);
             if (match.ambiguous()) {
                 clearPending();
                 return publish(now, State.LOST, targetId, null);
@@ -75,7 +87,7 @@ public final class LeadVehicleTracker {
             }
         }
 
-        VehicleDetector.Detection candidate = selectCandidate(frame.vehicles(), current, lane);
+        VehicleDetector.Detection candidate = selectCandidate(frame.vehicles(), current, lane, regionTop);
         if (confirmCandidate(candidate, now)) {
             target = candidate;
             targetId = nextId++;
@@ -110,13 +122,13 @@ public final class LeadVehicleTracker {
 
     private record Match(VehicleDetector.Detection detection, boolean ambiguous) { }
 
-    private Match findMatch(List<VehicleDetector.Detection> detections) {
+    private Match findMatch(List<VehicleDetector.Detection> detections, float regionTop) {
         VehicleDetector.Detection best = null;
         VehicleDetector.Detection second = null;
         float bestScore = -1f;
         float secondScore = -1f;
         for (VehicleDetector.Detection detection : detections) {
-            if (!eligible(detection) || !compatible(target, detection)) {
+            if (!eligible(detection, regionTop) || !compatible(target, detection)) {
                 continue;
             }
             float score = iou(target, detection);
@@ -138,11 +150,11 @@ public final class LeadVehicleTracker {
 
     private static VehicleDetector.Detection selectCandidate(
             List<VehicleDetector.Detection> detections, VehicleDetector.Detection current,
-            LaneDepartureDetector.Observation lane) {
+            LaneDepartureDetector.Observation lane, float regionTop) {
         VehicleDetector.Detection best = null;
         float bestScore = -Float.MAX_VALUE;
         for (VehicleDetector.Detection detection : detections) {
-            if (!eligible(detection)) {
+            if (!eligible(detection, regionTop)) {
                 continue;
             }
             boolean laneRecovery = current != null && detection != current
@@ -257,7 +269,7 @@ public final class LeadVehicleTracker {
         pendingObservations = 0;
     }
 
-    private static boolean eligible(VehicleDetector.Detection box) {
+    private static boolean eligible(VehicleDetector.Detection box, float regionTop) {
         if (box == null || !("car".equals(box.label()) || "bus".equals(box.label())
                 || "truck".equals(box.label())) || !Float.isFinite(box.confidence())
                 || box.confidence() < 0.5f || box.confidence() > 1f
@@ -265,10 +277,10 @@ public final class LeadVehicleTracker {
                 || !Float.isFinite(box.right()) || !Float.isFinite(box.bottom())
                 || box.left() < 0f || box.top() < 0f || box.right() > 1f || box.bottom() > 1f
                 || box.right() <= box.left() || box.bottom() <= box.top()
-                || box.bottom() < REGION_TOP) {
+                || box.bottom() < regionTop) {
             return false;
         }
-        float depth = (box.bottom() - REGION_TOP) / (1f - REGION_TOP);
+        float depth = (box.bottom() - regionTop) / (1f - regionTop);
         float halfWidth = REGION_TOP_HALF_WIDTH
                 + depth * (REGION_BOTTOM_HALF_WIDTH - REGION_TOP_HALF_WIDTH);
         return Math.abs(centerX(box) - 0.5f) <= halfWidth;

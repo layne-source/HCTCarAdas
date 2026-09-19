@@ -74,4 +74,19 @@ public final class CameraCalibrationTest {
         assertEquals(640.0 / 720.0, calib.focalLengthYNormalized(), 0.001);
         assertEquals(0.50, calib.principalPointYNormalized(), 0.001);
     }
+
+    @Test
+    public void fixedGuideCenterSurvivesPitchUpdateWithoutChangingDistanceScale() {
+        CameraCalibration centered = new CameraCalibration(1280, 720, 1.35, 0.92, 0.50, 8.0);
+        CameraCalibration shiftedGuide = new CameraCalibration(
+                1280, 720, 1.35, 0.92, 0.50, 8.0, 0.56);
+        assertEquals(centered.estimateDistanceMeters(0.75),
+                shiftedGuide.estimateDistanceMeters(0.75), 0.000001);
+        assertEquals(0.56, shiftedGuide.withPitchDegrees(9.0).guideCenterXNormalized(), 0.000001);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsNonFiniteGuideCenter() {
+        new CameraCalibration(1280, 720, 1.35, 0.92, 0.50, 8.0, Double.NaN);
+    }
 }

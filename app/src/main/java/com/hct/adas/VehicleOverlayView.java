@@ -17,7 +17,6 @@ import java.util.Locale;
 /** Displays source-normalized detections in the same letterboxed viewport as the preview. */
 public final class VehicleOverlayView extends View {
     private static final String TAG = "HctAdasCore";
-    private int bottomInsetPx = 0;
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint regionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -167,23 +166,9 @@ public final class VehicleOverlayView extends View {
         invalidate();
     }
 
-    public void setBottomInset(int bottomInsetPx) {
-        if (this.bottomInsetPx != bottomInsetPx) {
-            this.bottomInsetPx = bottomInsetPx;
-            invalidate();
-        }
-    }
-
     public float getHoodY(float top, float height) {
-        float density = getResources().getDisplayMetrics().density;
-        float margin = 4f * density;
         // Lower the hood reference baseline to 92% of the video frame (closer to the car's hood)
-        float baselineY = top + height * 0.92f;
-        if (bottomInsetPx > 0) {
-            float availableBottom = getHeight() - bottomInsetPx - margin;
-            return Math.min(baselineY, availableBottom);
-        }
-        return baselineY;
+        return top + height * 0.92f;
     }
 
     @Override

@@ -8,23 +8,6 @@ import org.junit.Test;
 
 public final class UsbCameraSourceTest {
     @Test
-    public void cameraIdPrefersSerialNumberOverDevicePath() {
-        assertEquals("usb:1234:5678:serial:SN-42",
-                UsbCameraSource.buildCameraId(1234, 5678, " SN-42 ", "/dev/bus/usb/001/002"));
-    }
-
-    @Test
-    public void cameraIdFailsClosedWhenSerialIsUnavailable() {
-        assertEquals("",
-                UsbCameraSource.buildCameraId(1234, 5678, "", "/dev/bus/usb/001/002"));
-    }
-
-    @Test
-    public void cameraIdFailsClosedWhenNeitherSerialNorPathIsAvailable() {
-        assertEquals("", UsbCameraSource.buildCameraId(1234, 5678, null, " "));
-    }
-
-    @Test
     public void previewCandidatesIncludeMjpegAndYuyvFallbacks() {
         UsbCameraSource.PreviewConfig[] candidates = UsbCameraSource.previewCandidates();
 
