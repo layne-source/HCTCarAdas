@@ -203,6 +203,12 @@ public final class AdasDecisionEngine {
             }
             return;
         }
+        // The first recovered sample may cross the tolerance between observations. Check it
+        // before clearing the loss timestamp, even when the tracker kept the same target ID.
+        if (targetLostSinceMillis != null
+                && observation.timestampMillis() - targetLostSinceMillis > LVSA_MAX_LOST_MILLIS) {
+            clearStationaryState();
+        }
         targetLostSinceMillis = null;
 
         boolean validData = Double.isFinite(observation.distanceMeters())

@@ -227,6 +227,37 @@ public final class AdasDecisionEngineTest {
     }
 
     @Test
+    public void lvsaRecoveryAfterLostToleranceMustEstablishANewWait() {
+        AdasDecisionEngine engine = new AdasDecisionEngine();
+        for (long time = 0L; time <= 3_000L; time += 200L) {
+            engine.update(observation(time, 0.0, 6.0, 0.0, 1000.0, true));
+        }
+        // Invalid ranging may keep the tracker ID. No invalid frame is itself over 600 ms old.
+        for (long time = 3_200L; time <= 3_800L; time += 200L) {
+            engine.update(observation(time, 0.0, Double.NaN, 0.0, 0.0, false));
+        }
+        assertFalse(engine.update(observation(4_000L, 0.0, 8.6, 0.0, 800.0, true))
+                .events().contains(AdasDecisionEngine.Alert.LVSA));
+        assertFalse(engine.update(observation(4_200L, 0.0, 9.2, -1.0, 760.0, true))
+                .events().contains(AdasDecisionEngine.Alert.LVSA));
+    }
+
+    @Test
+    public void lvsaRecoveryWithinLostToleranceKeepsArmedWait() {
+        AdasDecisionEngine engine = new AdasDecisionEngine();
+        for (long time = 0L; time <= 3_000L; time += 200L) {
+            engine.update(observation(time, 0.0, 6.0, 0.0, 1000.0, true));
+        }
+        for (long time = 3_200L; time <= 3_600L; time += 200L) {
+            engine.update(observation(time, 0.0, Double.NaN, 0.0, 0.0, false));
+        }
+        assertFalse(engine.update(observation(3_800L, 0.0, 8.6, 0.0, 800.0, true))
+                .events().contains(AdasDecisionEngine.Alert.LVSA));
+        assertTrue(engine.update(observation(4_000L, 0.0, 9.2, -1.0, 760.0, true))
+                .events().contains(AdasDecisionEngine.Alert.LVSA));
+    }
+
+    @Test
     public void emitsLaneDepartureOnlyAfterValidSpeedAndContinuousOffset() {
         AdasDecisionEngine engine = new AdasDecisionEngine();
         AdasDecisionEngine.Observation observation = observation(0L, 60.0,

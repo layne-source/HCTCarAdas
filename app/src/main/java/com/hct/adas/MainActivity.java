@@ -102,7 +102,10 @@ public final class MainActivity extends Activity {
                             LeadVehicleMotionEstimator.Measurement motion,
                             LaneDepartureDetector.Observation lane,
                             LaneGeometry.LaneSnapshot laneGeometry,
-                            AdasDecisionEngine.Decision decision, double speedKmh) { }
+                            AdasDecisionEngine.Decision decision, double speedKmh,
+                            long speedMeasuredAtNanos, long generation) { }
+    private record OverlayPresentation(Analysis analysis, AdasDecisionEngine.Decision decision,
+                                       FixedGuideController.Input guide, long continuity) { }
 
     private long lastHeartbeatLogNanos;
     private long lastLaneLogNanos;
@@ -116,9 +119,9 @@ public final class MainActivity extends Activity {
     private long previousTargetId = 0L;
     private long previousDecisionTargetId;
     private volatile Analysis latestAnalysis;
-    private volatile Set<AdasDecisionEngine.Alert> heldAlerts = Set.of();
-    private volatile long heldAlertTargetId;
-    private volatile long alertsHoldUntilNanos;
+    // Owned under the Activity monitor alongside latestAnalysis; display history is not audio state.
+    private final VisualAlertState visualAlerts = new VisualAlertState();
+    private long previousVisualSpeedTimestampNanos;
     // Latency instrumentation: when the collision risk first became measurable, so the log can show
     // the real confirmation delay instead of an estimate.
     private boolean previousCollisionDanger;
@@ -549,20 +552,23 @@ public final class MainActivity extends Activity {
         if (pendingCalibration != null) {
             calibrationOverlayView.setPreviewAvailable(calibrationFrameMatches(currentCalibrationFrame()));
         }
-        boolean fresh = result != null && (simulator.isRunning()
-                || (result.timestampNanos() >= acceptFramesAfterNanos
-                && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS));
         RuntimeException modelFailure = initializationFailure != null
                 ? initializationFailure : detectorFailure;
         boolean workerFailed = modelFailure != null || !workerSnapshot.lastError().isEmpty();
+        boolean previewReady = simulator.isRunning() || currentCalibrationFrame() != null;
+        OverlayPresentation presentation = snapshotPresentation(workerFailed, previewReady,
+                validSpeedKmh());
         if (!simulator.isRunning() && workerFailed) {
             updateRuntimeStatus("前车检测暂不可用");
             overlayView.setResult(null, null);
-        } else if (fresh) {
-            AdasDecisionEngine.Decision shown = displayDecision(analysis, now);
+        } else if (presentation != null) {
+            analysis = presentation.analysis();
+            result = analysis.detections();
+            overlayView.setVisualContinuity(presentation.continuity());
             overlayView.setResult(result, analysis.tracking(), analysis.lane(),
-                    analysis.laneGeometry(), shown, analysis.motion().visible(),
-                    Double.isFinite(displaySpeedKmh(analysis)), analysis.motion());
+                    analysis.laneGeometry(), presentation.decision(), analysis.motion().visible(),
+                    Double.isFinite(presentation.guide().speedKmh()), analysis.motion());
+            overlayView.setGuideInput(presentation.guide());
             updateRuntimeStatus(audioStatusText(audioStatus));
         } else {
             overlayView.setResult(null, null);
@@ -656,21 +662,25 @@ public final class MainActivity extends Activity {
     }
 
     private AdasDecisionEngine.Decision displayDecision(Analysis analysis, long now) {
-        long currentTargetId = (analysis != null && analysis.tracking() != null)
-                ? analysis.tracking().trackId() : 0L;
-        if (now < alertsHoldUntilNanos && !heldAlerts.isEmpty() && heldAlertTargetId == currentTargetId) {
-            return new AdasDecisionEngine.Decision(heldAlerts,
-                    analysis.decision().headwayWarning(),
-                    analysis.decision().headwayCritical(),
-                    analysis.decision().collisionDanger(),
-                    analysis.decision().laneWarning());
-        }
-        return analysis.decision();
+        AdasDecisionEngine.Decision current = analysis.decision();
+        return new AdasDecisionEngine.Decision(
+                visualAlerts.eventsFor(analysis.tracking().trackId(), now),
+                current.headwayWarning(), current.headwayCritical(), current.collisionDanger(),
+                current.laneWarning());
+    }
+
+    private static boolean validVisualTarget(LeadVehicleTracker.Snapshot tracking,
+                                             LeadVehicleMotionEstimator.Measurement motion) {
+        return tracking != null && tracking.state() == LeadVehicleTracker.State.TRACKING
+                && tracking.detection() != null && motion != null && motion.visible()
+                && motion.trackId() == tracking.trackId() && Double.isFinite(motion.distanceMeters())
+                && motion.distanceMeters() > 0.0;
     }
 
     private boolean validSpeedKmh() {
-        return Double.isFinite(egoSpeedKmh) && speedTimestampNanos > 0L
-                && SystemClock.elapsedRealtimeNanos() - speedTimestampNanos <= 2_000_000_000L;
+        long age = SystemClock.elapsedRealtimeNanos() - speedTimestampNanos;
+        return Double.isFinite(egoSpeedKmh) && speedTimestampNanos > 0L && age >= 0L
+                && age <= 2_000_000_000L && hasFineLocationPermission();
     }
 
     private synchronized void startLocationUpdates() {
@@ -851,9 +861,7 @@ public final class MainActivity extends Activity {
         if (decisionTargetId != previousDecisionTargetId) {
             decisionEngine.resetTargetState();
             previousDecisionTargetId = decisionTargetId;
-            heldAlerts = Set.of();
-            alertsHoldUntilNanos = 0L;
-            heldAlertTargetId = decisionTargetId;
+            visualAlerts.clear();
             // Danger edge belongs to the previous target; a new target must re-arm its own start.
             previousCollisionDanger = false;
             dangerStartedNanos = 0L;
@@ -884,10 +892,18 @@ public final class MainActivity extends Activity {
                     motion.closingSpeedMps(), speed, ttcSeconds));
         }
         previousCollisionDanger = decision.collisionDanger();
+        long visualSpeedMeasuredAt = simulationFrame ? SystemClock.elapsedRealtimeNanos()
+                : speedTimestampNanos;
+        if (previousVisualSpeedTimestampNanos > 0L
+                && visualSpeedMeasuredAt - previousVisualSpeedTimestampNanos > 2_000_000_000L) {
+            visualAlerts.clear();
+        }
+        previousVisualSpeedTimestampNanos = Double.isFinite(speed) ? visualSpeedMeasuredAt : 0L;
+        // Observe invalid speed on the producer too: the UI can skip this frame before GPS recovers.
+        visualAlerts.observe(decisionTargetId, validVisualTarget(tracking, motion)
+                        && Double.isFinite(speed),
+                decision.events(), nowNanos);
         if (!decision.events().isEmpty()) {
-            heldAlerts = decision.events();
-            heldAlertTargetId = decisionTargetId;
-            alertsHoldUntilNanos = nowNanos + 1_500_000_000L;
             long confirmationMs = dangerStartedNanos > 0L
                     ? (nowNanos - dangerStartedNanos) / 1_000_000L : -1L;
             for (AdasDecisionEngine.Alert alert : decision.events()) {
@@ -906,7 +922,9 @@ public final class MainActivity extends Activity {
         if (alertAudio != null) {
             alertAudio.play(decision.events());
         }
-        latestAnalysis = new Analysis(result, tracking, motion, lane, laneGeometry, decision, speed);
+        latestAnalysis = new Analysis(result, tracking, motion, lane, laneGeometry, decision, speed,
+                visualSpeedMeasuredAt,
+                frameGeneration);
     }
 
     /**
@@ -1146,7 +1164,11 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("关闭", null)
                 .create();
         settingsDialog = dialog;
-        dialog.setOnDismissListener(ignored -> settingsDialog = null);
+        overlayView.setGuideSettingsOpen(true);
+        dialog.setOnDismissListener(ignored -> {
+            settingsDialog = null;
+            overlayView.setGuideSettingsOpen(false);
+        });
         calibrationAction.setOnClickListener(view -> {
             UsbCameraSource.PreviewSnapshot currentFrame = currentCalibrationFrame();
             if (currentFrame == null) {
@@ -1192,6 +1214,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showCalibrationOverlay() {
+        overlayView.setGuideInput(null);
         calibrationOverlayView.setCalibration(pendingCalibration);
         calibrationOverlayView.setPreviewAvailable(calibrationFrameMatches(currentCalibrationFrame()));
         calibrationOverlayContainer.setVisibility(View.VISIBLE);
@@ -1287,6 +1310,46 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Copy one coherent observation. No UI, logging or audio-service calls while holding this lock. */
+    private synchronized OverlayPresentation snapshotPresentation(boolean workerFailed,
+                                                                  boolean previewReady, boolean gpsReady) {
+        long now = System.nanoTime();
+        Analysis analysis = latestAnalysis;
+        VehicleDetector.Result result = analysis == null ? null : analysis.detections();
+        boolean simulation = simulator.isRunning();
+        boolean fresh = result != null && analysis.generation() == resultsGeneration
+                && result.timestampNanos() >= acceptFramesAfterNanos
+                && now - result.timestampNanos() >= 0L
+                && now - result.timestampNanos() <= LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS;
+        if (!started || !fresh || !previewReady || (!simulation && workerFailed)) {
+            visualAlerts.clear();
+            return null;
+        }
+        // GPS may recover before the producer publishes another analysis. A new fix must not
+        // revive the old observation's risk/hold across a gap the UI never sampled.
+        boolean continuousSpeed = simulation
+                || speedTimestampNanos - analysis.speedMeasuredAtNanos() <= 2_000_000_000L;
+        double speed = simulation ? analysis.speedKmh()
+                : gpsReady && continuousSpeed && Double.isFinite(analysis.speedKmh())
+                        ? egoSpeedKmh : Double.NaN;
+        if (!Double.isFinite(speed)) {
+            visualAlerts.clear();
+        }
+        AdasDecisionEngine.Decision shown = continuousSpeed ? displayDecision(analysis, now)
+                : new AdasDecisionEngine.Decision(Set.of(), false, false, false, false);
+        boolean distanceReady = AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
+                result.frameWidth(), result.frameHeight());
+        FixedGuideController.Input input = new FixedGuideController.Input(analysis.generation(),
+                result.timestampNanos(), true, distanceReady, started, pendingCalibration != null,
+                settingsDialog != null, speed,
+                simulation ? analysis.speedMeasuredAtNanos() : speedTimestampNanos,
+                analysis.tracking().state(), validVisualTarget(analysis.tracking(), analysis.motion()),
+                shown.headwayWarning(), shown.collisionDanger() || shown.headwayCritical()
+                || shown.events().contains(AdasDecisionEngine.Alert.FCW)
+                || shown.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL));
+        return new OverlayPresentation(analysis, shown, input, visualAlerts.continuity());
+    }
+
     private void fitPreview(int frameWidth, int frameHeight) {
         if (previewView.getWidth() == 0 || previewView.getHeight() == 0) {
             return;
@@ -1336,8 +1399,8 @@ public final class MainActivity extends Activity {
         previousCollisionDanger = false;
         dangerStartedNanos = 0L;
         latestAnalysis = null;
-        heldAlerts = Set.of();
-        alertsHoldUntilNanos = 0L;
+        visualAlerts.clear();
+        previousVisualSpeedTimestampNanos = 0L;
     }
 
     /**

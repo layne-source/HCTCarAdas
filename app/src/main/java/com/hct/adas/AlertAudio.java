@@ -20,6 +20,12 @@ public final class AlertAudio implements AutoCloseable {
 
     private static final String TAG = "HctAdasAudio";
     private static final long LOAD_TIMEOUT_MILLIS = 5_000L;
+    // Cover the bundled WAV durations (FCW 560, HMW 300, LDW 550, LVSA 400 ms),
+    // not just the fallback tone. A shorter lock lets a low-priority request overlap the tail.
+    private static final int FCW_PLAYBACK_MILLIS = 600;
+    private static final int HMW_PLAYBACK_MILLIS = 300;
+    private static final int LDW_PLAYBACK_MILLIS = 550;
+    private static final int LVSA_PLAYBACK_MILLIS = 400;
     private final AudioManager audioManager;
     private final SoundPool soundPool;
     private final int fcwSound;
@@ -146,9 +152,7 @@ public final class AlertAudio implements AutoCloseable {
      * FCW or HMW_CRITICAL event can still preempt it instead of being suppressed by the test sound.
      */
     public synchronized boolean testSound() {
-        activePriority = 1;
-        priorityLockUntilNanos = System.nanoTime() + 250_000_000L;
-        return playSound(hmwSound, ToneGenerator.TONE_PROP_ACK, 250);
+        return playPrioritized(1, hmwSound, ToneGenerator.TONE_PROP_ACK, HMW_PLAYBACK_MILLIS);
     }
 
     public synchronized boolean play(Set<AdasDecisionEngine.Alert> alerts) {
@@ -158,25 +162,30 @@ public final class AlertAudio implements AutoCloseable {
         int priority = 1;
         int sound = lvsaSound;
         int fallbackTone = ToneGenerator.TONE_PROP_ACK;
-        int durationMillis = 350;
+        int durationMillis = LVSA_PLAYBACK_MILLIS;
 
         if (alerts.contains(AdasDecisionEngine.Alert.FCW)) {
             priority = 4;
             sound = fcwSound;
             fallbackTone = ToneGenerator.TONE_PROP_BEEP2;
-            durationMillis = 600;
+            durationMillis = FCW_PLAYBACK_MILLIS;
         } else if (alerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
             priority = 3;
             sound = hmwSound;
             fallbackTone = ToneGenerator.TONE_PROP_BEEP;
-            durationMillis = 250;
+            durationMillis = HMW_PLAYBACK_MILLIS;
         } else if (alerts.contains(AdasDecisionEngine.Alert.LDW)) {
             priority = 2;
             sound = ldwSound;
             fallbackTone = ToneGenerator.TONE_SUP_PIP;
-            durationMillis = 400;
+            durationMillis = LDW_PLAYBACK_MILLIS;
         }
 
+        return playPrioritized(priority, sound, fallbackTone, durationMillis);
+    }
+
+    /** Speaker tests and real events obey the same lock; failed playback never claims priority. */
+    private boolean playPrioritized(int priority, int sound, int fallbackTone, int durationMillis) {
         long now = System.nanoTime();
         if (now < priorityLockUntilNanos && priority < activePriority) {
             return false;
@@ -193,7 +202,7 @@ public final class AlertAudio implements AutoCloseable {
         boolean played = playSound(sound, fallbackTone, durationMillis);
         if (played) {
             activePriority = priority;
-            priorityLockUntilNanos = now + (long) durationMillis * 1_000_000L;
+            priorityLockUntilNanos = System.nanoTime() + (long) durationMillis * 1_000_000L;
         }
         return played;
     }

@@ -7,12 +7,16 @@ import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Shader;
+import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
 
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
 
 /** Displays source-normalized detections in the same letterboxed viewport as the preview. */
 public final class VehicleOverlayView extends View {
@@ -33,6 +37,41 @@ public final class VehicleOverlayView extends View {
     private LeadVehicleMotionEstimator.Measurement motion;
     private boolean measurementAvailable;
     private boolean speedAvailable;
+    private static final int GUIDE_GREEN = 0xFF36D99C;
+    private static final int GUIDE_YELLOW = 0xFFF2BA49;
+    private static final int GUIDE_RED = 0xFFFF525E;
+    private static final long COLOR_FADE_NANOS = 250_000_000L;
+    private static final long ARROW_CYCLE_NANOS = 1_800_000_000L;
+    private final FixedGuideController guideController = new FixedGuideController();
+    private final FixedGuideRenderer guideRenderer;
+    private FixedGuideController.Input guideInput;
+    private final RectF targetBounds = new RectF();
+    private final RectF targetLabelBounds = new RectF();
+    private CalibrationAlignment.Viewport imageViewport;
+    private int viewportFrameWidth;
+    private int viewportFrameHeight;
+    private int viewportViewWidth;
+    private int viewportViewHeight;
+    private String targetLabel = "";
+    private List<String> debugLabels = List.of();
+    private float targetLabelBaseline;
+    private boolean guideSettingsOpen;
+    private boolean animationScheduled;
+    private boolean arrowsMoving;
+    private long arrowStartNanos;
+    private long visualContinuity;
+    private long colorTargetId;
+    private int displayColor = GUIDE_GREEN;
+    private int colorFrom = GUIDE_GREEN;
+    private int colorTo = GUIDE_GREEN;
+    private long colorStartNanos;
+    private boolean colorFading;
+    private final Runnable animationTick = () -> {
+        animationScheduled = false;
+        if (isAttachedToWindow() && isShown() && getWindowVisibility() == VISIBLE) {
+            invalidate();
+        }
+    };
     /**
      * How long a dropped lane keeps being drawn as a faded corridor, in milliseconds. Long enough that
      * a few dropped frames are invisible, short enough that a stale corridor never outlives the
@@ -67,6 +106,7 @@ public final class VehicleOverlayView extends View {
         textPaint.setTextSize(16f * getResources().getDisplayMetrics().scaledDensity);
         textPaint.setShadowLayer(2f, 1f, 1f, Color.BLACK);
         float density = getResources().getDisplayMetrics().density;
+        guideRenderer = new FixedGuideRenderer(density);
         regionPaint.setColor(0x9980DEEA);
         regionPaint.setStyle(Paint.Style.STROKE);
         regionPaint.setStrokeWidth(density);
@@ -123,7 +163,76 @@ public final class VehicleOverlayView extends View {
         this.measurementAvailable = measurementAvailable;
         this.speedAvailable = speedAvailable;
         this.motion = motion;
+        targetLabel = makeTargetLabel();
+        debugLabels = makeDebugLabels();
+        if (result == null) {
+            setGuideInput(null);
+            resetVisualAnimation();
+        }
         invalidate();
+    }
+
+    /** The Activity publishes original input times; animation never refreshes them. */
+    public void setGuideInput(FixedGuideController.Input input) {
+        guideInput = input;
+        if (input == null) {
+            guideController.reset();
+            stopAnimation();
+        } else {
+            guideSettingsOpen = input.settingsOpen();
+        }
+        invalidate();
+    }
+
+    public void setGuideSettingsOpen(boolean open) {
+        guideSettingsOpen = open;
+        arrowsMoving = false;
+        invalidate();
+    }
+
+    public void setVisualContinuity(long continuity) {
+        if (visualContinuity != continuity) {
+            visualContinuity = continuity;
+            resetVisualAnimation();
+        }
+    }
+
+    private void stopAnimation() {
+        removeCallbacks(animationTick);
+        animationScheduled = false;
+        arrowsMoving = false;
+    }
+
+    private void resetVisualAnimation() {
+        stopAnimation();
+        colorFading = false;
+        colorTargetId = 0L;
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        setGuideInput(null);
+        resetVisualAnimation();
+        guideRenderer.reset();
+        super.onDetachedFromWindow();
+    }
+
+    @Override
+    protected void onVisibilityChanged(View changedView, int visibility) {
+        super.onVisibilityChanged(changedView, visibility);
+        if (visibility != VISIBLE && guideController != null) {
+            setGuideInput(null);
+            resetVisualAnimation();
+        }
+    }
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (visibility != VISIBLE && guideController != null) {
+            setGuideInput(null);
+            resetVisualAnimation();
+        }
     }
 
     /**
@@ -161,6 +270,11 @@ public final class VehicleOverlayView extends View {
     }
 
     public void setCalibration(CameraCalibration calibration, CalibrationStore.Status status) {
+        if (!java.util.Objects.equals(this.calibration, calibration) || calibrationStatus != status) {
+            setGuideInput(null);
+            resetVisualAnimation();
+            guideRenderer.reset();
+        }
         this.calibration = calibration;
         this.calibrationStatus = status == null ? CalibrationStore.Status.UNCONFIGURED : status;
         invalidate();
@@ -175,20 +289,38 @@ public final class VehicleOverlayView extends View {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
 
+        long now = System.nanoTime();
+        if (result != null && (now - result.timestampNanos() < 0L
+                || now - result.timestampNanos() > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS)) {
+            // Check on every draw, including animation ticks between the Activity's 250 ms updates.
+            guideController.reset();
+            resetVisualAnimation();
+            return;
+        }
+
         int frameWidth = result != null ? result.frameWidth()
                 : (calibration != null ? calibration.imageWidth() : 1280);
         int frameHeight = result != null ? result.frameHeight()
                 : (calibration != null ? calibration.imageHeight() : 720);
 
-        float scale = Math.min((float) getWidth() / frameWidth,
-                (float) getHeight() / frameHeight);
-        float width = frameWidth * scale;
-        float height = frameHeight * scale;
-        float left = (getWidth() - width) / 2f;
-        float top = (getHeight() - height) / 2f;
+        if (getWidth() <= 0 || getHeight() <= 0 || frameWidth <= 0 || frameHeight <= 0) {
+            stopAnimation();
+            return;
+        }
+        if (imageViewport == null || viewportFrameWidth != frameWidth || viewportFrameHeight != frameHeight
+                || viewportViewWidth != getWidth() || viewportViewHeight != getHeight()) {
+            imageViewport = CalibrationAlignment.fitCenter(getWidth(), getHeight(), frameWidth, frameHeight);
+            viewportFrameWidth = frameWidth;
+            viewportFrameHeight = frameHeight;
+            viewportViewWidth = getWidth();
+            viewportViewHeight = getHeight();
+        }
+        float width = (float) imageViewport.width();
+        float height = (float) imageViewport.height();
+        float left = (float) imageViewport.left();
+        float top = (float) imageViewport.top();
 
-        // The lightweight release has no lane guidance UI. Keep this branch behind the product
-        // switch so an old calibration state can never expose the previous engineering guides.
+        // Real lane detection remains disabled. The fixed guide below has its own product gate.
         boolean sizeMismatch = result != null && calibration != null
                 && !calibration.isUsableFor(result.frameWidth(), result.frameHeight());
         if (AdasCalibrationMode.LDW_ENABLED
@@ -214,6 +346,33 @@ public final class VehicleOverlayView extends View {
             return; // Only skip dynamic vehicle boxes and lanes when no detection result is available
         }
 
+        prepareTargetReadout(left, top, width, height);
+        updateDisplayColor(now);
+        FixedGuideController.Mode guideMode = guideController.update(guideInput, now,
+                SystemClock.elapsedRealtimeNanos());
+        boolean guideGeometryReady = guideRenderer.prepare(calibration, frameWidth, frameHeight,
+                getWidth(), getHeight());
+        if (!guideGeometryReady) {
+            guideMode = FixedGuideController.Mode.HIDDEN;
+        }
+        boolean moving = guideMode == FixedGuideController.Mode.NORMAL && !guideSettingsOpen;
+        if (moving && !arrowsMoving) {
+            arrowStartNanos = now;
+        }
+        arrowsMoving = moving;
+        float phase = moving ? (float) ((now - arrowStartNanos) % ARROW_CYCLE_NANOS)
+                / ARROW_CYCLE_NANOS : 0f;
+        guideRenderer.draw(canvas, guideMode,
+                guideMode == FixedGuideController.Mode.MONITORING ? GUIDE_GREEN : displayColor,
+                phase, targetBounds, targetLabelBounds);
+        if ((moving || colorFading) && isAttachedToWindow() && isShown()
+                && getWindowVisibility() == VISIBLE && !animationScheduled) {
+            animationScheduled = true;
+            postDelayed(animationTick, 34L);
+        } else if (!moving && !colorFading) {
+            stopAnimation();
+        }
+
         // Lane geometry is extrapolated from a fixed normalized ROI, so it is only meaningful while
         // the active calibration is bound to this exact frame size.
         if (AdasCalibrationMode.LDW_ENABLED && !sizeMismatch) {
@@ -227,7 +386,8 @@ public final class VehicleOverlayView extends View {
             logLaneDrawing(false);
             return;
         }
-        for (VehicleDetector.Detection detection : result.vehicles()) {
+        for (int index = 0; index < result.vehicles().size(); index++) {
+            VehicleDetector.Detection detection = result.vehicles().get(index);
             boolean selected = tracking != null && detection.equals(tracking.detection());
             int color = selected ? selectedColor() : 0xFFB0BEC5;
             boxPaint.setColor(color);
@@ -236,33 +396,45 @@ public final class VehicleOverlayView extends View {
             float y = top + detection.top() * height;
             canvas.drawRect(x, y, left + detection.right() * width,
                     top + detection.bottom() * height, boxPaint);
-            String label = switch (detection.label()) {
-                case "car" -> "轿车";
-                case "bus" -> "客车";
-                default -> "货车";
-            };
-            if (selected) {
-                label = (tracking.state() == LeadVehicleTracker.State.TRACKING
-                        ? getResources().getString(R.string.tracking_box_label, tracking.trackId())
-                        : getResources().getString(R.string.tracking_candidate)) + " · " + label;
-            }
-            canvas.drawText(String.format(Locale.ROOT, "%s %.0f%%", label,
-                    detection.confidence() * 100f), x,
+            canvas.drawText(debugLabels.get(index), x,
                     Math.max(textPaint.getTextSize(), y - 4f), textPaint);
         }
         logLaneDrawing(hoodLineVisible());
     }
 
-    /** Draws the distance next to the currently tracked vehicle instead of in a fixed HUD card. */
-    private void drawTargetReadout(Canvas canvas, float left, float top, float width, float height) {
-        if (tracking == null || tracking.detection() == null || motion == null || !motion.visible()
-                || motion.trackId() != tracking.trackId() || !Double.isFinite(motion.distanceMeters())) {
-            return;
+    private List<String> makeDebugLabels() {
+        if (!BuildConfig.DEBUG || result == null) {
+            return List.of();
         }
-        VehicleDetector.Detection target = tracking.detection();
-        float x = left + target.left() * width;
-        float y = top + target.top() * height;
-        int color = selectedColor();
+        List<String> labels = new ArrayList<>(result.vehicles().size());
+        for (VehicleDetector.Detection detection : result.vehicles()) {
+            String label = switch (detection.label()) {
+                case "car" -> "轿车";
+                case "bus" -> "客车";
+                default -> "货车";
+            };
+            if (tracking != null && detection.equals(tracking.detection())) {
+                label = (tracking.state() == LeadVehicleTracker.State.TRACKING
+                        ? getResources().getString(R.string.tracking_box_label, tracking.trackId())
+                        : getResources().getString(R.string.tracking_candidate)) + " · " + label;
+            }
+            labels.add(String.format(Locale.ROOT, "%s %.0f%%", label, detection.confidence() * 100f));
+        }
+        return labels;
+    }
+
+    private boolean currentTargetValid() {
+        return tracking != null && tracking.state() == LeadVehicleTracker.State.TRACKING
+                && tracking.detection() != null && motion != null && motion.visible()
+                && motion.trackId() == tracking.trackId() && Double.isFinite(motion.distanceMeters())
+                && motion.distanceMeters() > 0.0;
+    }
+
+    /** Label formatting follows new measurements, never the 30 FPS arrow clock. */
+    private String makeTargetLabel() {
+        if (!currentTargetValid()) {
+            return "";
+        }
         String label = String.format(Locale.ROOT, "%.1f m", motion.distanceMeters());
         if (decision != null && decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
             label += " · FCW";
@@ -273,32 +445,52 @@ public final class VehicleOverlayView extends View {
                 && decision.events().contains(AdasDecisionEngine.Alert.LVSA)) {
             label += " · LVSA";
         }
-        float density = getResources().getDisplayMetrics().density;
-        float textSize = 14f * getResources().getDisplayMetrics().scaledDensity;
-        textPaint.setTextSize(textSize);
-        textPaint.setColor(Color.WHITE);
-        float paddingX = 8f * density;
-        float paddingY = 5f * density;
-        float labelWidth = textPaint.measureText(label) + paddingX * 2f;
-        float labelLeft = Math.max(left, Math.min(x, left + width - labelWidth));
-        float baseline = Math.max(top + textSize + paddingY, y - 7f * density);
-        targetLabelBackgroundPaint.setColor((color & 0x00FFFFFF) | 0xD9000000);
-        canvas.drawRoundRect(labelLeft, baseline - textSize - paddingY,
-                labelLeft + labelWidth, baseline + paddingY * 0.5f,
-                7f * density, 7f * density, targetLabelBackgroundPaint);
-        canvas.drawText(label, labelLeft + paddingX, baseline, textPaint);
+        return label;
     }
 
-    private void drawTargetBox(Canvas canvas, float left, float top, float width, float height) {
-        if (tracking == null || tracking.detection() == null || motion == null || !motion.visible()
-                || motion.trackId() != tracking.trackId()) {
+    private void prepareTargetReadout(float left, float top, float width, float height) {
+        targetBounds.setEmpty();
+        targetLabelBounds.setEmpty();
+        if (!currentTargetValid() || targetLabel.isEmpty()) {
             return;
         }
         VehicleDetector.Detection target = tracking.detection();
+        float x = left + target.left() * width;
+        float y = top + target.top() * height;
+        targetBounds.set(x, y, left + target.right() * width, top + target.bottom() * height);
+        float density = getResources().getDisplayMetrics().density;
+        float textSize = 14f * getResources().getDisplayMetrics().scaledDensity;
+        textPaint.setTextSize(textSize);
+        float paddingX = 8f * density;
+        float paddingY = 5f * density;
+        float labelWidth = textPaint.measureText(targetLabel) + paddingX * 2f;
+        float labelLeft = Math.max(left, Math.min(x, left + width - labelWidth));
+        targetLabelBaseline = Math.max(top + textSize + paddingY, y - 7f * density);
+        targetLabelBounds.set(labelLeft, targetLabelBaseline - textSize - paddingY,
+                labelLeft + labelWidth, targetLabelBaseline + paddingY * 0.5f);
+    }
+
+    /** Draws the cached label using exactly the same bounds excluded from the reference band. */
+    private void drawTargetReadout(Canvas canvas, float left, float top, float width, float height) {
+        if (targetLabelBounds.isEmpty()) {
+            return;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        textPaint.setColor(Color.WHITE);
+        targetLabelBackgroundPaint.setColor((selectedColor() & 0x00FFFFFF) | 0xD9000000);
+        canvas.drawRoundRect(targetLabelBounds, 7f * density, 7f * density,
+                targetLabelBackgroundPaint);
+        canvas.drawText(targetLabel, targetLabelBounds.left + 8f * density,
+                targetLabelBaseline, textPaint);
+    }
+
+    private void drawTargetBox(Canvas canvas, float left, float top, float width, float height) {
+        if (targetBounds.isEmpty()) {
+            return;
+        }
         boxPaint.setColor(selectedColor());
         boxPaint.setStrokeWidth(2.5f * getResources().getDisplayMetrics().density);
-        canvas.drawRect(left + target.left() * width, top + target.top() * height,
-                left + target.right() * width, top + target.bottom() * height, boxPaint);
+        canvas.drawRect(targetBounds, boxPaint);
     }
 
     /** True when the calibration reference lines are being drawn this frame. */
@@ -331,13 +523,17 @@ public final class VehicleOverlayView extends View {
     }
 
     private int selectedColor() {
+        return displayColor;
+    }
+
+    private int desiredTargetColor() {
         if (decision != null && (decision.collisionDanger() || decision.headwayCritical()
                 || decision.events().contains(AdasDecisionEngine.Alert.FCW)
                 || decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL))) {
-            return Color.RED;
+            return GUIDE_RED;
         }
         if (decision != null && (decision.headwayWarning() || decision.laneWarning())) {
-            return Color.YELLOW;
+            return GUIDE_YELLOW;
         }
         if (tracking != null && tracking.state() == LeadVehicleTracker.State.CANDIDATE) {
             return Color.CYAN;
@@ -345,7 +541,45 @@ public final class VehicleOverlayView extends View {
         if (!measurementAvailable || !speedAvailable) {
             return 0xFFB0BEC5;
         }
-        return Color.GREEN;
+        return GUIDE_GREEN;
+    }
+
+    /** Both the box and band consume one color; only risk downgrades blend for 250 ms. */
+    private void updateDisplayColor(long now) {
+        int desired = desiredTargetColor();
+        long targetId = currentTargetValid() ? tracking.trackId() : 0L;
+        if (targetId == 0L || targetId != colorTargetId || riskLevel(desired) < 0
+                || riskLevel(colorTo) < 0) {
+            arrowsMoving = false;
+            colorTargetId = targetId;
+            displayColor = colorFrom = colorTo = desired;
+            colorFading = false;
+            return;
+        }
+        if (desired != colorTo) {
+            if (riskLevel(desired) >= riskLevel(colorTo)) {
+                displayColor = colorFrom = colorTo = desired;
+                colorFading = false;
+            } else {
+                colorFrom = displayColor;
+                colorTo = desired;
+                colorStartNanos = now;
+                colorFading = true;
+            }
+        }
+        if (colorFading) {
+            float fraction = Math.max(0f, Math.min(1f, (float) (now - colorStartNanos)
+                    / COLOR_FADE_NANOS));
+            displayColor = Color.rgb(
+                    Math.round(Color.red(colorFrom) + (Color.red(colorTo) - Color.red(colorFrom)) * fraction),
+                    Math.round(Color.green(colorFrom) + (Color.green(colorTo) - Color.green(colorFrom)) * fraction),
+                    Math.round(Color.blue(colorFrom) + (Color.blue(colorTo) - Color.blue(colorFrom)) * fraction));
+            colorFading = fraction < 1f;
+        }
+    }
+
+    private static int riskLevel(int color) {
+        return color == GUIDE_RED ? 2 : color == GUIDE_YELLOW ? 1 : color == GUIDE_GREEN ? 0 : -1;
     }
 
     private void drawLane(Canvas canvas, float left, float top, float width, float height) {
