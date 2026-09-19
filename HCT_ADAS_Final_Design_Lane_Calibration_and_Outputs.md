@@ -1,8 +1,8 @@
-# HCT ADAS 最终方案：车道感知、标定与输出规格
+# HCT ADAS V1 精简版：车道感知、标定与输出规格
 
 > 文档基线：2026-09-18 工作区。当前统计为 **14 个 JVM 测试类、143 个 `@Test` 方法**；Gradle focused suite 受环境 loopback 错误阻断，临时 `javac + JUnit` harness 已通过 106 个纯 Java 用例，因此不把统计误写成“全量通过”。
 > 对标对象：消费级后装 ADAS（行车记录仪 ADAS / Mobileye 后装 / Tesla 摄像头校准流程）。
-> 本文取代此前"换 YOLO/EfficientDet 车道模型 + ByteTrack"的初始设想，理由见第 8 节。
+> 本文是当前 V1 轻量车道与标定实现的基线；V2 双模型和 ByteTrack 模块已移除。
 > 设备与实车验证仍未完成；所有阈值都是待实车确认的工程初值。
 
 ## 1. 最终决策摘要

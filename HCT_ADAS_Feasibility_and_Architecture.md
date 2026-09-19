@@ -1,6 +1,6 @@
-# 基于高通 SM4450 的独立 ADAS 可行性与技术边界
+# HCT ADAS V1 精简版可行性与技术边界
 
-> 更新于 2026-09-18。本文保留原理和可行性边界，实施状态、7 点开发顺序及验收以 [最终方案与实施计划](HCT_ADAS_Final_Solution_and_Implementation_Plan.md) 为准。
+> 更新于 2026-09-18。本文保留 V1 原理和可行性边界，实施状态与验收以 [V1 精简版方案与实施计划](HCT_ADAS_Final_Solution_and_Implementation_Plan.md) 为准；V2 双模型和 ByteTrack 方案已放弃。
 >
 > 原报告中的 JNI/NCNN/YOLO 方案是早期备选；本项目已采用 Java + LiteRT。原先“经实测 12–18 ms”“40–60 MB”“过滤 85% 主动变道误报”“CPU 消耗归零”“1 周完成”等表述没有本项目验证依据，本次撤去。
 
