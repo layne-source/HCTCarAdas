@@ -73,7 +73,11 @@ public final class CalibrationStore {
 
     public int loadProgress() {
         try {
-            return Math.max(0, Math.min(100, preferences.getInt(KEY_PROGRESS, 0)));
+            if (load() == null) {
+                return 0;
+            }
+            Status status = Status.valueOf(preferences.getString(KEY_STATUS, null));
+            return canonicalProgress(status, preferences.getInt(KEY_PROGRESS, 0));
         } catch (RuntimeException malformed) {
             return 0;
         }
@@ -88,7 +92,7 @@ public final class CalibrationStore {
             throw new IllegalArgumentException("calibration must not be null");
         }
         Status targetStatus = status == null ? Status.CALIBRATED : status;
-        int clampedProgress = Math.max(0, Math.min(100, progress));
+        int clampedProgress = canonicalProgress(targetStatus, progress);
         SharedPreferences.Editor editor = preferences.edit()
                 .putInt(KEY_VERSION, VERSION)
                 .putInt(KEY_WIDTH, calibration.imageWidth())
@@ -109,11 +113,23 @@ public final class CalibrationStore {
 
     public void saveStatus(Status status, int progress) {
         Status targetStatus = status == null ? Status.UNCONFIGURED : status;
-        int clampedProgress = Math.max(0, Math.min(100, progress));
+        int clampedProgress = canonicalProgress(targetStatus, progress);
         preferences.edit()
                 .putString(KEY_STATUS, targetStatus.name())
                 .putInt(KEY_PROGRESS, clampedProgress)
                 .apply();
+    }
+
+    /** Keeps persisted progress consistent with the meaning of each calibration state. */
+    static int canonicalProgress(Status status, int progress) {
+        if (status == Status.CALIBRATED || status == Status.DISTANCE_READY) {
+            return 100;
+        }
+        if (status == null || status == Status.UNCONFIGURED
+                || status == Status.WIZARD_COMPLETED) {
+            return 0;
+        }
+        return Math.max(0, Math.min(99, progress));
     }
 
     public void clear() {

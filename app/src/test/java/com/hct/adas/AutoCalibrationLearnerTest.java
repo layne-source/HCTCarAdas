@@ -10,6 +10,23 @@ import org.junit.Test;
 
 public final class AutoCalibrationLearnerTest {
     @Test
+    public void distanceReadyStartsCompleteEvenWithLegacyZeroProgress() {
+        AutoCalibrationLearner learner = new AutoCalibrationLearner(
+                CalibrationStore.Status.DISTANCE_READY, 0);
+        assertEquals(100, learner.progress());
+    }
+
+    @Test
+    public void distanceReadyRemainsCompleteAcrossSessionAndCaptureResets() {
+        AutoCalibrationLearner learner = new AutoCalibrationLearner();
+        learner.reset(CalibrationStore.Status.DISTANCE_READY);
+        assertEquals(100, learner.progress());
+        learner.resetSamples();
+        assertEquals(CalibrationStore.Status.DISTANCE_READY, learner.status());
+        assertEquals(100, learner.progress());
+    }
+
+    @Test
     public void rejectsNullAndUnconfiguredCalibration() {
         AutoCalibrationLearner learner = new AutoCalibrationLearner();
         assertEquals(CalibrationStore.Status.UNCONFIGURED, learner.status());

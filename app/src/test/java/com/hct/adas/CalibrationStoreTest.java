@@ -24,6 +24,25 @@ public final class CalibrationStoreTest {
     }
 
     @Test
+    public void distanceReadyProgressIsCanonicalEvenWhenCallerSuppliesZero() {
+        assertEquals(100, CalibrationStore.canonicalProgress(
+                CalibrationStore.Status.DISTANCE_READY, 0));
+        assertEquals(100, CalibrationStore.canonicalProgress(
+                CalibrationStore.Status.CALIBRATED, 0));
+        assertEquals(0, CalibrationStore.canonicalProgress(
+                CalibrationStore.Status.WIZARD_COMPLETED, 100));
+        assertEquals(99, CalibrationStore.canonicalProgress(
+                CalibrationStore.Status.CALIBRATING, 100));
+    }
+
+    @Test
+    public void completeProfileLoadsFullProgressFromLegacyZeroValue() {
+        Map<String, Object> values = validValues();
+        values.put("learning_progress", 0);
+        assertEquals(100, store(values).loadProgress());
+    }
+
+    @Test
     public void missingGeometryCannotFallBackToZero() {
         for (String key : new String[] {"image_width", "image_height", "camera_height_m",
                 "focal_y_normalized", "principal_y_normalized", "pitch_degrees",
@@ -32,6 +51,7 @@ public final class CalibrationStoreTest {
             values.remove(key);
             assertNull(key, store(values).load());
             assertEquals(CalibrationStore.Status.UNCONFIGURED, store(values).loadStatus());
+            assertEquals(0, store(values).loadProgress());
         }
     }
 

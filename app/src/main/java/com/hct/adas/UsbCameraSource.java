@@ -69,6 +69,8 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private volatile long openingStartedNanos;
     private boolean streamConfirmed;
     private UsbDevice selectedDevice;
+    // Connection-local identity only; never persisted or used to bind calibration.
+    private String pausedDeviceName;
     private SurfaceTexture surface;
     // The camera thread exclusively owns these native resources.
     private UVCCamera camera;
@@ -178,6 +180,11 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                     }
                 } else if (selectedDevice == null) {
                     // Startup ambiguity can resolve when one of two cameras is unplugged.
+                    boolean hasRemainingVideoDevice = usbManager.getDeviceList().values().stream()
+                            .anyMatch(UsbCameraSource::isVideoDevice);
+                    if (!hasRemainingVideoDevice) {
+                        cameraSelectionNeedsConfirmation = false;
+                    }
                     selectCamera();
                 }
             }
@@ -205,7 +212,6 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         mainHandler.removeCallbacks(frameWatchdog);
         mainHandler.postDelayed(frameWatchdog, FRAME_WATCHDOG_INTERVAL_MILLIS);
         openRetryCount = 0;
-        cameraSelectionNeedsConfirmation = false;
         generation.incrementAndGet();
         surface = previewView.isAvailable() ? previewView.getSurfaceTexture() : null;
         IntentFilter filter = new IntentFilter(permissionAction);
@@ -220,7 +226,16 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         // camera waiting for an authorisation the user has already given.
         activity.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
         registered = true;
+        List<String> currentCameras = usbManager.getDeviceList().values().stream()
+                .filter(UsbCameraSource::isVideoDevice)
+                .map(UsbDevice::getDeviceName).collect(Collectors.toList());
+        cameraSelectionNeedsConfirmation = needsConfirmationOnResume(
+                cameraSelectionNeedsConfirmation, pausedDeviceName, currentCameras);
+        pausedDeviceName = null;
         selectCamera();
+        if (cameraSelectionNeedsConfirmation) {
+            listener.onError("前视摄像头已断开，请确认剩余摄像头后点击重试");
+        }
     }
 
     private void selectCamera() {
@@ -253,6 +268,13 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     /** Enumeration order cannot identify which of several video devices faces the road. */
     static String singleCameraName(List<String> candidates) {
         return candidates.size() == 1 ? candidates.get(0) : null;
+    }
+
+    /** Detach broadcasts are not received while stopped, so check the previous connection too. */
+    static boolean needsConfirmationOnResume(boolean pending, String previousDeviceName,
+                                              List<String> candidates) {
+        return !candidates.isEmpty() && (pending
+                || (previousDeviceName != null && !candidates.contains(previousDeviceName)));
     }
 
     private void requestPermission(UsbDevice device) {
@@ -481,6 +503,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     }
 
     public void stop() {
+        if (running) {
+            pausedDeviceName = selectedDevice == null ? null : selectedDevice.getDeviceName();
+        }
         running = false;
         mainHandler.removeCallbacks(frameWatchdog);
         invalidatePreview();

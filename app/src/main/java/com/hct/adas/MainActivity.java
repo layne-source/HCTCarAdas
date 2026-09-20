@@ -57,6 +57,7 @@ public final class MainActivity extends Activity {
     private static final double HEIGHT_SEDAN_METERS = 1.30;
     private static final double HEIGHT_SUV_METERS = 1.55;
     private static final double HEIGHT_TRUCK_METERS = 2.00;
+    private static final double MAX_SPEED_ACCELERATION_MPS2 = 15.0;
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private volatile RuntimeException initializationFailure;
@@ -757,6 +758,23 @@ public final class MainActivity extends Activity {
                 && age <= 2_000_000_000L && hasFineLocationPermission() && locationEnabled();
     }
 
+    /** Rejects impossible speed changes for every strictly newer location timestamp. */
+    static boolean isSpeedTransitionPlausible(double previousSpeedKmh, long previousMeasuredAtNanos,
+                                              double nextSpeedKmh, long nextMeasuredAtNanos) {
+        if (!Double.isFinite(previousSpeedKmh) || previousMeasuredAtNanos <= 0L) {
+            return true;
+        }
+        if (!Double.isFinite(nextSpeedKmh) || nextMeasuredAtNanos <= previousMeasuredAtNanos) {
+            return false;
+        }
+        double dtSec = (nextMeasuredAtNanos - previousMeasuredAtNanos) / 1_000_000_000.0;
+        if (!(dtSec > 0.0) || !Double.isFinite(dtSec)) {
+            return false;
+        }
+        double accelMps2 = Math.abs(nextSpeedKmh - previousSpeedKmh) / (dtSec * 3.6);
+        return Double.isFinite(accelMps2) && accelMps2 <= MAX_SPEED_ACCELERATION_MPS2;
+    }
+
     private boolean locationEnabled() {
         try {
             return locationManager != null && locationManager.isLocationEnabled();
@@ -840,14 +858,9 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 // Reject impossible acceleration spikes (> 15 m/s^2 ≈ 1.5g)
-                if (Double.isFinite(egoSpeedKmh) && speedTimestampNanos > 0L) {
-                    double dtSec = (measuredAt - speedTimestampNanos) / 1_000_000_000.0;
-                    if (dtSec > 0.05 && dtSec < 1.0) {
-                        double accelMps2 = Math.abs(rawKmh - egoSpeedKmh) / (dtSec * 3.6);
-                        if (accelMps2 > 15.0) {
-                            return; // Spike/glitch rejected
-                        }
-                    }
+                if (!isSpeedTransitionPlausible(egoSpeedKmh, speedTimestampNanos,
+                        rawKmh, measuredAt)) {
+                    return; // Spike/glitch rejected
                 }
                 double prevSpeed = egoSpeedKmh;
                 egoSpeedKmh = rawKmh;
@@ -1062,9 +1075,6 @@ public final class MainActivity extends Activity {
         if (simulator.isRunning()) {
             simulator.stop();
             restoreSimulationState();
-            simulationButton.setText("室内模拟测试");
-            simulationButton.setBackgroundResource(R.drawable.hud_debug_button);
-            simulationButton.setTextColor(0xFF80D8FF);
             Toast.makeText(this, "已停止模拟测试，恢复正常监测", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -1155,9 +1165,6 @@ public final class MainActivity extends Activity {
             @Override
             public void onFinished(AdasSimulator.Scenario finished) {
                 restoreSimulationState();
-                simulationButton.setText("室内模拟测试");
-                simulationButton.setBackgroundResource(R.drawable.hud_debug_button);
-                simulationButton.setTextColor(0xFF80D8FF);
                 Toast.makeText(MainActivity.this, "模拟完成: " + finished.displayName(), Toast.LENGTH_SHORT).show();
             }
         });
@@ -1176,6 +1183,9 @@ public final class MainActivity extends Activity {
         calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
         clearResults();
         overlayView.setCalibration(calibration, calibrationStatus);
+        simulationButton.setText("室内模拟测试");
+        simulationButton.setBackgroundResource(R.drawable.hud_debug_button);
+        simulationButton.setTextColor(0xFF80D8FF);
         setStatusText(cameraStatusText == null
                 ? getString(R.string.app_bootstrap_status) : cameraStatusText, true);
     }

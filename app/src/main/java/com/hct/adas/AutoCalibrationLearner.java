@@ -137,7 +137,7 @@ public final class AutoCalibrationLearner {
 
     public AutoCalibrationLearner(CalibrationStore.Status initialStatus, int initialProgress) {
         this.status = initialStatus == null ? CalibrationStore.Status.UNCONFIGURED : initialStatus;
-        this.progress = Math.max(0, Math.min(100, initialProgress));
+        this.progress = CalibrationStore.canonicalProgress(this.status, initialProgress);
     }
 
     /** Legacy entry point: no pitch solve, so the vanishing-point window remains the judgement. */
@@ -614,7 +614,7 @@ public final class AutoCalibrationLearner {
 
     public synchronized void reset(CalibrationStore.Status newStatus) {
         this.status = newStatus == null ? CalibrationStore.Status.UNCONFIGURED : newStatus;
-        this.progress = this.status == CalibrationStore.Status.CALIBRATED ? 100 : 0;
+        this.progress = CalibrationStore.canonicalProgress(this.status, 0);
         this.samples.clear();
         this.lastVanishingY = Double.NaN;
         this.lastVanishingX = Double.NaN;

@@ -21,6 +21,32 @@ public final class UsbCameraSourceTest {
     }
 
     @Test
+    public void backgroundDisconnectCannotSilentlySelectAnotherCamera() {
+        assertTrue(UsbCameraSource.needsConfirmationOnResume(false,
+                "/dev/bus/usb/001/002", List.of("/dev/bus/usb/002/004")));
+    }
+
+    @Test
+    public void foregroundConfirmationSurvivesStopAndStart() {
+        assertTrue(UsbCameraSource.needsConfirmationOnResume(true, null,
+                List.of("/dev/bus/usb/002/004")));
+    }
+
+    @Test
+    public void unchangedCameraAndFirstConnectionDoNotRequireConfirmation() {
+        assertFalse(UsbCameraSource.needsConfirmationOnResume(false,
+                "/dev/bus/usb/001/002", List.of("/dev/bus/usb/001/002")));
+        assertFalse(UsbCameraSource.needsConfirmationOnResume(false, null,
+                List.of("/dev/bus/usb/001/002")));
+    }
+
+    @Test
+    public void noRemainingCameraClearsOldConfirmation() {
+        assertFalse(UsbCameraSource.needsConfirmationOnResume(true,
+                "/dev/bus/usb/001/002", List.of()));
+    }
+
+    @Test
     public void previewCandidatesIncludeMjpegAndYuyvFallbacks() {
         UsbCameraSource.PreviewConfig[] candidates = UsbCameraSource.previewCandidates();
 
