@@ -35,13 +35,15 @@ public final class CalibrationStore {
     }
 
     public CameraCalibration load() {
-        if (preferences.getInt(KEY_VERSION, 0) != VERSION
-                || !preferences.contains(KEY_WIDTH) || !preferences.contains(KEY_HEIGHT)
-                || !preferences.contains(KEY_GUIDE_CENTER_X)) {
-            return null;
-        }
         try {
-            return new CameraCalibration(
+            if (preferences.getInt(KEY_VERSION, 0) != VERSION
+                    || !preferences.contains(KEY_WIDTH) || !preferences.contains(KEY_HEIGHT)
+                    || !preferences.contains(KEY_CAMERA_HEIGHT) || !preferences.contains(KEY_FOCAL_Y)
+                    || !preferences.contains(KEY_PRINCIPAL_Y) || !preferences.contains(KEY_PITCH)
+                    || !preferences.contains(KEY_GUIDE_CENTER_X)) {
+                return null;
+            }
+            CameraCalibration calibration = new CameraCalibration(
                     preferences.getInt(KEY_WIDTH, 0),
                     preferences.getInt(KEY_HEIGHT, 0),
                     Double.longBitsToDouble(preferences.getLong(KEY_CAMERA_HEIGHT, 0L)),
@@ -49,6 +51,7 @@ public final class CalibrationStore {
                     Double.longBitsToDouble(preferences.getLong(KEY_PRINCIPAL_Y, 0L)),
                     Double.longBitsToDouble(preferences.getLong(KEY_PITCH, 0L)),
                     Double.longBitsToDouble(preferences.getLong(KEY_GUIDE_CENTER_X, 0L)));
+            return CalibrationAlignment.isValid(calibration) ? calibration : null;
         } catch (RuntimeException malformed) {
             return null;
         }
@@ -59,20 +62,21 @@ public final class CalibrationStore {
         if (calibration == null) {
             return Status.UNCONFIGURED;
         }
-        String name = preferences.getString(KEY_STATUS, null);
-        if (name == null) {
-            return Status.CALIBRATED;
-        }
         try {
-            return Status.valueOf(name);
-        } catch (IllegalArgumentException invalid) {
+            String name = preferences.getString(KEY_STATUS, null);
+            return name == null ? Status.UNCONFIGURED : Status.valueOf(name);
+        } catch (RuntimeException invalid) {
             // Unknown persisted state must fail safe and keep distance warnings disabled.
             return Status.UNCONFIGURED;
         }
     }
 
     public int loadProgress() {
-        return Math.max(0, Math.min(100, preferences.getInt(KEY_PROGRESS, 0)));
+        try {
+            return Math.max(0, Math.min(100, preferences.getInt(KEY_PROGRESS, 0)));
+        } catch (RuntimeException malformed) {
+            return 0;
+        }
     }
 
     public void save(CameraCalibration calibration) {

@@ -3,6 +3,7 @@ package com.hct.adas;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.graphics.Matrix;
@@ -11,10 +12,12 @@ import android.hardware.usb.UsbDevice;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.TextureView;
 import android.view.View;
@@ -33,6 +36,7 @@ import android.window.OnBackInvokedDispatcher;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -95,6 +99,7 @@ public final class MainActivity extends Activity {
     private boolean permissionAsked;
     private boolean locationPermissionAsked;
     private boolean locationPermissionDenied;
+    private boolean locationUpdatesRequested;
     private volatile boolean started;
     private volatile long acceptFramesAfterNanos;
     private volatile long resultsGeneration;
@@ -217,19 +222,8 @@ public final class MainActivity extends Activity {
         simulationButton.setOnClickListener(view -> showSimulationDialog());
         settingsButton.setVisibility(View.GONE);
         locationManager = getSystemService(LocationManager.class);
-        try {
-            alertAudio = new AlertAudio(this);
-        } catch (IOException | RuntimeException failure) {
-            Log.w(TAG, "Alert audio unavailable", failure);
-        }
-        statusView.setOnClickListener(view -> {
-            if (started && checkSelfPermission(Manifest.permission.CAMERA)
-                    != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[] {Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
-            } else if (started) {
-                cameraSource.retryOpen();
-            }
-        });
+        retryAlertAudio();
+        statusView.setOnClickListener(view -> retryUnavailableServices());
         frameDispatcher = new FrameDispatcher(2);
         frameConsumer = new FrameConsumer(frameDispatcher, new FrameConsumer.Handler() {
             private VehicleDetector detector;
@@ -420,6 +414,7 @@ public final class MainActivity extends Activity {
         updateCameraStatus(getString(R.string.app_bootstrap_status), false);
         previousMetricsTime = System.nanoTime();
         previousCaptured = cameraSource.capturedFrames();
+        retryAlertAudio();
         frameConsumer.start();
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             cameraSource.start();
@@ -432,6 +427,75 @@ public final class MainActivity extends Activity {
             }
         }
         metricsHandler.post(metricsUpdater);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (started && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            cameraSource.start();
+        }
+        // Settings can return without a new permission-result callback (including split screen).
+        if (started && hasFineLocationPermission()) {
+            if (!locationUpdatesRequested || locationPermissionDenied) ensureLocationPermission();
+        } else if (started && locationPermissionAsked) {
+            locationPermissionDenied = true;
+            stopLocationUpdates();
+        }
+    }
+
+    private void retryUnavailableServices() {
+        if (!started) return;
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            if (permissionAsked && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+                openSystemSettings(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            } else {
+                permissionAsked = true;
+                requestPermissions(new String[] {Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
+            }
+        } else if (!getString(R.string.camera_opened).contentEquals(
+                cameraStatusText == null ? "" : cameraStatusText)) {
+            cameraSource.retryOpen();
+        } else if (alertAudio == null || alertAudio.status() == AlertAudio.Status.UNAVAILABLE) {
+            retryAlertAudio();
+        } else if (!hasFineLocationPermission()) {
+            if (locationPermissionAsked
+                    && !shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                openSystemSettings(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            } else {
+                locationPermissionAsked = false;
+                ensureLocationPermission();
+            }
+        } else if (!locationEnabled()) {
+            openSystemSettings(Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+        } else if (!validSpeedKmh()) {
+            startLocationUpdates();
+        }
+    }
+
+    private void openSystemSettings(String action) {
+        Intent intent = new Intent(action);
+        if (Settings.ACTION_APPLICATION_DETAILS_SETTINGS.equals(action)) {
+            intent.setData(Uri.parse("package:" + getPackageName()));
+        }
+        try {
+            startActivity(intent);
+        } catch (RuntimeException unavailable) {
+            Log.w(TAG, "Cannot open system settings", unavailable);
+            Toast.makeText(this, "请在系统设置中开启相机、精确定位权限和定位服务", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Explicit retry or foreground re-entry only; never recreate audio on every HUD tick. */
+    private synchronized void retryAlertAudio() {
+        if (alertAudio != null && alertAudio.status() != AlertAudio.Status.UNAVAILABLE) return;
+        if (alertAudio != null) alertAudio.close();
+        alertAudio = null;
+        try {
+            alertAudio = new AlertAudio(this);
+        } catch (IOException | RuntimeException failure) {
+            Log.w(TAG, "Alert audio unavailable", failure);
+        }
     }
 
     @Override
@@ -462,6 +526,7 @@ public final class MainActivity extends Activity {
 
     private void ensureLocationPermission() {
         if (hasFineLocationPermission()) {
+            locationPermissionDenied = false;
             startLocationUpdates();
         } else if (!locationPermissionAsked) {
             locationPermissionAsked = true;
@@ -530,7 +595,7 @@ public final class MainActivity extends Activity {
                     heartbeat == null ? Set.of() : heartbeat.decision().events());
             // Age is mixed with the 250 ms metrics phase, so report it alongside the split at the
             // hand-off and the dequeue: the parts are phase-free and attribute latency to the
-            // throttle, the queue or the pipeline.
+            // NV21 copy, the queue or the handler. A handler may skip frames during model backoff.
             double currentFps = (captured - previousCaptured) * 1_000_000_000.0
                     / Math.max(1L, now - previousMetricsTime);
 
@@ -539,6 +604,9 @@ public final class MainActivity extends Activity {
                     measurementQueueWaitMs(workerSnapshot),
                     measurementProcessingMs(workerSnapshot),
                     speedDesc, calibDesc, targetDesc, laneDesc, eventDesc));
+            Log.i(TAG, AdasLogFormat.pipelineHealth(
+                    heartbeat == null ? 0L : heartbeat.detections().timestampNanos(), now,
+                    frameDispatcher.metrics(), cameraSource.invalidFrames(), workerSnapshot.failedFrames()));
             logCalibrationHeartbeat();
         }
         previousCaptured = captured;
@@ -590,7 +658,13 @@ public final class MainActivity extends Activity {
             setStatusText(cameraStatus, false);
         } else if (runtimeStatus == null || runtimeStatus.isEmpty()) {
             if (locationPermissionDenied) {
-                setStatusText("需要精确定位权限，车速相关功能已暂停", false);
+                setStatusText("需要精确定位权限 · 点击恢复", false);
+            } else if (!locationEnabled()) {
+                setStatusText("系统定位已关闭或不可用 · 点击检查", false);
+            } else if (!locationUpdatesRequested) {
+                setStatusText("车速定位请求失败 · 点击重试", false);
+            } else if (!validSpeedKmh()) {
+                setStatusText("等待有效 GPS 车速，车速相关功能已暂停", false);
             } else {
                 setStatusText(cameraStatus, true);
             }
@@ -602,7 +676,7 @@ public final class MainActivity extends Activity {
     private static String audioStatusText(AlertAudio.Status status) {
         return switch (status) {
             case READY, LOADING -> null;
-            case UNAVAILABLE -> "报警音不可用，请检查车机音频通道";
+            case UNAVAILABLE -> "报警音不可用 · 点击重试";
             case MUTED -> "媒体音量已静音，声音预警不可用";
         };
     }
@@ -624,8 +698,8 @@ public final class MainActivity extends Activity {
      *
      * <p>All are differences between timestamps taken on the same clock, so unlike the heartbeat's
      * {@code Age} they do not carry the 250 ms metrics-tick phase. They answer different questions:
-     * capture-to-hand-off is the sampling throttle plus the NV21 copy, queue wait is backlog, and
-     * processing is the per-frame pipeline cost that a cheaper detection stage would reduce.
+     * capture-to-hand-off covers the sampled callback's NV21 copy, queue wait is backlog, and
+     * processing is the handler cost (including early returns during backoff, not only inference).
      *
      * <p>Each is exposed as its own typed accessor rather than an array: a format-string mismatch
      * between {@code long} and {@code double} throws at runtime, and every one of these values goes
@@ -680,44 +754,49 @@ public final class MainActivity extends Activity {
     private boolean validSpeedKmh() {
         long age = SystemClock.elapsedRealtimeNanos() - speedTimestampNanos;
         return Double.isFinite(egoSpeedKmh) && speedTimestampNanos > 0L && age >= 0L
-                && age <= 2_000_000_000L && hasFineLocationPermission();
+                && age <= 2_000_000_000L && hasFineLocationPermission() && locationEnabled();
+    }
+
+    private boolean locationEnabled() {
+        try {
+            return locationManager != null && locationManager.isLocationEnabled();
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
     }
 
     private synchronized void startLocationUpdates() {
-        egoSpeedKmh = Double.NaN;
-        speedTimestampNanos = 0L;
-        if (locationManager == null || !hasFineLocationPermission()) {
+        stopLocationUpdates();
+        if (!started || locationManager == null || !hasFineLocationPermission()) {
             return;
         }
+        locationPermissionDenied = false;
+        List<String> providers;
         try {
-            boolean requested = false;
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f,
-                        locationListener, Looper.getMainLooper());
-                requested = true;
-            }
-            if (locationManager.isProviderEnabled(LocationManager.FUSED_PROVIDER)) {
-                locationManager.requestLocationUpdates(LocationManager.FUSED_PROVIDER, 500L, 0f,
-                        locationListener, Looper.getMainLooper());
-                requested = true;
-            }
-            if (!requested) {
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f,
-                        locationListener, Looper.getMainLooper());
-            }
-
-            Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            if (last == null) {
-                last = locationManager.getLastKnownLocation(LocationManager.FUSED_PROVIDER);
-            }
-            // Stale check: strictly reject cached location older than 2.0 seconds
-            if (last != null && (SystemClock.elapsedRealtimeNanos() - last.getElapsedRealtimeNanos())
-                    <= 2_000_000_000L) {
-                locationListener.onLocationChanged(last);
-            }
+            providers = locationManager.getAllProviders();
         } catch (RuntimeException failure) {
-            Log.w(TAG, "GPS speed unavailable", failure);
-            egoSpeedKmh = Double.NaN;
+            Log.w(TAG, "Cannot query location providers", failure);
+            return;
+        }
+        for (String provider : new String[] {LocationManager.GPS_PROVIDER, LocationManager.FUSED_PROVIDER}) {
+            if (!providers.contains(provider)) continue;
+            try {
+                // Subscribe while disabled too, so enabling location later can recover naturally.
+                locationManager.requestLocationUpdates(provider, 500L, 0f,
+                        locationListener, Looper.getMainLooper());
+                locationUpdatesRequested = true;
+            } catch (RuntimeException failure) {
+                Log.w(TAG, "Cannot subscribe to speed provider " + provider, failure);
+                continue;
+            }
+            try {
+                if (locationManager.isProviderEnabled(provider)) {
+                    // The listener rejects stale/out-of-order fixes and keeps the newest provider.
+                    locationListener.onLocationChanged(locationManager.getLastKnownLocation(provider));
+                }
+            } catch (RuntimeException failure) {
+                Log.w(TAG, "Cannot read cached speed from " + provider, failure);
+            }
         }
     }
 
@@ -730,12 +809,13 @@ public final class MainActivity extends Activity {
         if (locationManager != null) {
             try {
                 locationManager.removeUpdates(locationListener);
-            } catch (SecurityException ignored) {
-                // Permission can be revoked while the activity is stopping.
+            } catch (RuntimeException failure) {
+                Log.w(TAG, "Cannot remove location updates", failure);
             }
         }
         egoSpeedKmh = Double.NaN;
         speedTimestampNanos = 0L;
+        locationUpdatesRequested = false;
     }
 
     private final LocationListener locationListener = new LocationListener() {
@@ -853,7 +933,7 @@ public final class MainActivity extends Activity {
         LeadVehicleMotionEstimator.Measurement motion = motionEstimator.update(
                 tracking, activeCalib, result.frameWidth(), result.frameHeight());
         LaneGeometry.LaneSnapshot laneGeometry = laneSnapshot(lane, result.frameWidth(),
-                result.frameHeight());
+                result.frameHeight(), result.timestampNanos());
 
         boolean hasTarget = (tracking.state() == LeadVehicleTracker.State.TRACKING
                 || tracking.state() == LeadVehicleTracker.State.LOST);
@@ -936,7 +1016,8 @@ public final class MainActivity extends Activity {
      * fades it out against its own timestamp, so one dropped frame no longer makes the corridor blink.
      */
     private LaneGeometry.LaneSnapshot laneSnapshot(LaneDepartureDetector.Observation lane,
-                                                   int frameWidth, int frameHeight) {
+                                                   int frameWidth, int frameHeight,
+                                                   long timestampNanos) {
         if (!AdasCalibrationMode.LDW_ENABLED) {
             return LaneGeometry.LaneSnapshot.INVALID;
         }
@@ -958,7 +1039,7 @@ public final class MainActivity extends Activity {
             return heldLaneGeometry;
         }
         LaneGeometry.LaneSnapshot snapshot = LaneGeometry.snapshot(
-                System.currentTimeMillis(), active, pitch, near, lane.widthSamples(),
+                timestampNanos, active, pitch, near, lane.widthSamples(),
                 frameWidth, frameHeight);
         heldLaneGeometry = snapshot;
         return snapshot;
@@ -1328,15 +1409,19 @@ public final class MainActivity extends Activity {
         // GPS may recover before the producer publishes another analysis. A new fix must not
         // revive the old observation's risk/hold across a gap the UI never sampled.
         boolean continuousSpeed = simulation
-                || speedTimestampNanos - analysis.speedMeasuredAtNanos() <= 2_000_000_000L;
+                || (analysis.speedMeasuredAtNanos() > 0L
+                    && speedTimestampNanos >= analysis.speedMeasuredAtNanos()
+                    && speedTimestampNanos - analysis.speedMeasuredAtNanos() <= 2_000_000_000L);
         double speed = simulation ? analysis.speedKmh()
                 : gpsReady && continuousSpeed && Double.isFinite(analysis.speedKmh())
                         ? egoSpeedKmh : Double.NaN;
         if (!Double.isFinite(speed)) {
             visualAlerts.clear();
         }
-        AdasDecisionEngine.Decision shown = continuousSpeed ? displayDecision(analysis, now)
-                : new AdasDecisionEngine.Decision(Set.of(), false, false, false, false);
+        AdasDecisionEngine.Decision shown = Double.isFinite(speed) ? displayDecision(analysis, now)
+                : AdasDecisionEngine.distanceOnlyDecision(analysis.motion().distanceMeters(),
+                        analysis.motion().closingSpeedMps(),
+                        validVisualTarget(analysis.tracking(), analysis.motion()));
         boolean distanceReady = AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
                 result.frameWidth(), result.frameHeight());
         FixedGuideController.Input input = new FixedGuideController.Input(analysis.generation(),

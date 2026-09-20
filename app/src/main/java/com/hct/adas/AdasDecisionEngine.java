@@ -141,7 +141,16 @@ public final class AdasDecisionEngine {
         return ttcSeconds <= FCW_TTC_SECONDS;
     }
 
-    private boolean isHeadwayWarning(Observation observation) {
+    /** Display fallback when speed expires between analyses; never mutates event/cooldown state. */
+    public static Decision distanceOnlyDecision(double distanceMeters, double closingSpeedMps,
+                                                boolean targetVisible) {
+        Observation observation = new Observation(0L, Double.NaN, distanceMeters,
+                closingSpeedMps, Double.NaN, targetVisible);
+        return new Decision(Set.of(), isHeadwayWarning(observation), isHeadwayCritical(observation),
+                false, false);
+    }
+
+    private static boolean isHeadwayWarning(Observation observation) {
         if (!observation.targetVisible() || !Double.isFinite(observation.distanceMeters())
                 || observation.distanceMeters() <= 0.0) {
             return false;
@@ -161,7 +170,7 @@ public final class AdasDecisionEngine {
         }
         return distance <= HMW_DISTANCE_METERS;
     }
-    private boolean isHeadwayCritical(Observation observation) {
+    private static boolean isHeadwayCritical(Observation observation) {
         if (!observation.targetVisible() || !Double.isFinite(observation.distanceMeters())
                 || observation.distanceMeters() <= 0.0) {
             return false;

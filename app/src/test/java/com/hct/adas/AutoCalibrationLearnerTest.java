@@ -560,7 +560,7 @@ public final class AutoCalibrationLearnerTest {
         double nearWidth = 0.0;
         for (int i = 0; i <= 8; i++) {
             double rowY = farRow + (nearRow - farRow) * i / 8.0;
-            double width = widthFactor * LaneGeometry.laneWidthModelMeters(wizard, rowY,
+            double width = widthFactor * LaneGeometry.laneWidthNormalized(wizard, rowY,
                     truePitchDegrees, LaneGeometry.DEFAULT_LANE_WIDTH_METERS, frameWidth,
                     frameHeight);
             if (!Double.isFinite(width)) {

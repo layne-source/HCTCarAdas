@@ -20,8 +20,10 @@ import com.serenegiant.usb.USBMonitor;
 import com.serenegiant.usb.UVCCamera;
 
 import java.nio.ByteBuffer;
-import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -57,6 +59,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     private boolean closed;
     private boolean registered;
     private boolean permissionRequested;
+    private boolean cameraSelectionNeedsConfirmation;
     private volatile boolean opening;
     private volatile int openRetryCount;
     private volatile boolean previewActive;
@@ -160,15 +163,23 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                 }
             } else if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction())) {
                 selectCamera();
-            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(intent.getAction())
-                    && isSelected(device)) {
-                invalidatePreview();
-                selectedDevice = null;
-                permissionRequested = false;
-                openRetryCount = 0;
-                cameraHandler.post(UsbCameraSource.this::closeCamera);
-                listener.onDeviceDetached(device);
-                selectCamera();
+            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(intent.getAction())) {
+                if (isSelected(device)) {
+                    invalidatePreview();
+                    selectedDevice = null;
+                    permissionRequested = false;
+                    openRetryCount = 0;
+                    cameraHandler.post(UsbCameraSource.this::closeCamera);
+                    listener.onDeviceDetached(device);
+                    cameraSelectionNeedsConfirmation = usbManager.getDeviceList().values().stream()
+                            .anyMatch(UsbCameraSource::isVideoDevice);
+                    if (cameraSelectionNeedsConfirmation) {
+                        listener.onError("前视摄像头已断开，请确认剩余摄像头后点击重试");
+                    }
+                } else if (selectedDevice == null) {
+                    // Startup ambiguity can resolve when one of two cameras is unplugged.
+                    selectCamera();
+                }
             }
         }
     };
@@ -194,6 +205,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         mainHandler.removeCallbacks(frameWatchdog);
         mainHandler.postDelayed(frameWatchdog, FRAME_WATCHDOG_INTERVAL_MILLIS);
         openRetryCount = 0;
+        cameraSelectionNeedsConfirmation = false;
         generation.incrementAndGet();
         surface = previewView.isAvailable() ? previewView.getSurfaceTexture() : null;
         IntentFilter filter = new IntentFilter(permissionAction);
@@ -212,12 +224,21 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     }
 
     private void selectCamera() {
-        if (!running || selectedDevice != null) {
+        if (!running || selectedDevice != null || cameraSelectionNeedsConfirmation) {
             return;
         }
-        selectedDevice = usbManager.getDeviceList().values().stream()
+        Map<String, UsbDevice> devices = usbManager.getDeviceList();
+        List<String> candidates = devices.values().stream()
                 .filter(UsbCameraSource::isVideoDevice)
-                .min(Comparator.comparing(UsbDevice::getDeviceName)).orElse(null);
+                .map(UsbDevice::getDeviceName).collect(Collectors.toList());
+        String name = singleCameraName(candidates);
+        if (name == null) {
+            if (candidates.size() > 1) {
+                listener.onError("检测到多个 USB 摄像头，请仅保留前视摄像头");
+            }
+            return;
+        }
+        selectedDevice = devices.get(name);
         if (selectedDevice == null) {
             return;
         }
@@ -227,6 +248,11 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         } else if (!permissionRequested) {
             requestPermission(selectedDevice);
         }
+    }
+
+    /** Enumeration order cannot identify which of several video devices faces the road. */
+    static String singleCameraName(List<String> candidates) {
+        return candidates.size() == 1 ? candidates.get(0) : null;
     }
 
     private void requestPermission(UsbDevice device) {
@@ -440,6 +466,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             }
         }
         openRetryCount = 0;
+        cameraSelectionNeedsConfirmation = false;
         invalidatePreview();
         cameraHandler.post(this::closeCamera);
         listener.onError("正在重新连接 USB 摄像头");

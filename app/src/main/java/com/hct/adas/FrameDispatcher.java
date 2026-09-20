@@ -42,7 +42,7 @@ public final class FrameDispatcher implements AutoCloseable {
             frames.removeFirst();
             droppedFrames++;
         }
-        // Wall clock at hand-off travels with the frame so the consumer can split the end-to-end
+        // Monotonic time at hand-off travels with the frame so the consumer can split the end-to-end
         // age into a queueing part and a processing part. It is per-frame rather than a shared
         // field: the producer may hand over the next frame while this one is still being handled.
         frames.addLast(new Frame(nv21, width, height, timestampNanos, System.nanoTime()));
@@ -96,7 +96,7 @@ public final class FrameDispatcher implements AutoCloseable {
 
     public synchronized void discardPending() {
         // Deliberate invalidation (disconnect, reopen, session reset) is not queue overflow.
-        // Keeping the counters apart lets the UI show congestion and stream loss separately.
+        // Keeping the counters apart lets diagnostics show congestion and stream loss separately.
         discardedFrames += frames.size();
         frames.clear();
     }

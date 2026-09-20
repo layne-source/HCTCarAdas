@@ -158,7 +158,7 @@ public final class AdasSimulator {
         double nearWidth = Double.NaN;
         for (int i = 0; i <= 8; i++) {
             double rowY = farRow + (nearRow - farRow) * i / 8.0;
-            double laneWidth = LaneGeometry.laneWidthModelMeters(calibration, rowY, truePitchDegrees,
+            double laneWidth = LaneGeometry.laneWidthNormalized(calibration, rowY, truePitchDegrees,
                     LaneGeometry.DEFAULT_LANE_WIDTH_METERS, width, height);
             if (!Double.isFinite(laneWidth)) {
                 continue;

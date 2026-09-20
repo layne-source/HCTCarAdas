@@ -102,7 +102,7 @@ public final class FrameConsumer implements AutoCloseable {
         } finally {
             try {
                 handler.onStopped();
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | LinkageError failure) {
                 recordFailure(failure);
             }
             synchronized (this) {
@@ -115,7 +115,7 @@ public final class FrameConsumer implements AutoCloseable {
         }
     }
 
-    private synchronized void recordFailure(RuntimeException failure) {
+    private synchronized void recordFailure(Throwable failure) {
         failedFrames++;
         lastError = failure.getClass().getSimpleName() + ": " + failure.getMessage();
     }

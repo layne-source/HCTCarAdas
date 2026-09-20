@@ -83,8 +83,12 @@ public final class LiteRtVehicleDetector implements VehicleDetector {
             outputs.put(1, classes);
             outputs.put(2, scores);
             outputs.put(3, count);
-        } catch (RuntimeException failure) {
-            interpreter.close();
+        } catch (RuntimeException | LinkageError failure) {
+            try {
+                interpreter.close();
+            } catch (RuntimeException | LinkageError cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
             throw failure;
         }
     }

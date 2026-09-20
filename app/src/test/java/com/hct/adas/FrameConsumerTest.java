@@ -112,6 +112,57 @@ public final class FrameConsumerTest {
     }
 
     @Test
+    public void restartSurvivesNativeReleaseFailure() throws Exception {
+        FrameDispatcher dispatcher = new FrameDispatcher(2);
+        CountDownLatch firstConsumed = new CountDownLatch(1);
+        CountDownLatch releaseEntered = new CountDownLatch(1);
+        CountDownLatch allowRelease = new CountDownLatch(1);
+        CountDownLatch secondConsumed = new CountDownLatch(1);
+        CountDownLatch secondStopped = new CountDownLatch(1);
+        AtomicInteger releases = new AtomicInteger();
+        FrameConsumer consumer = new FrameConsumer(dispatcher, new FrameConsumer.Handler() {
+            public void onFrame(FrameDispatcher.Frame frame) {
+                if (frame.timestampNanos() == 1L) firstConsumed.countDown();
+                else secondConsumed.countDown();
+            }
+            public void onStopped() {
+                if (releases.incrementAndGet() == 1) {
+                    releaseEntered.countDown();
+                    boolean released = false;
+                    while (!released) {
+                        try {
+                            allowRelease.await();
+                            released = true;
+                        } catch (InterruptedException ignored) {
+                            // Native release may not respond to interruption.
+                        }
+                    }
+                    throw new UnsatisfiedLinkError("native close failed");
+                }
+                secondStopped.countDown();
+            }
+        });
+        try {
+            consumer.start();
+            dispatcher.offer(new byte[] {1}, 2, 2, 1L);
+            assertTrue(firstConsumed.await(1, TimeUnit.SECONDS));
+            consumer.close();
+            assertTrue(releaseEntered.await(1, TimeUnit.SECONDS));
+            consumer.start();
+            dispatcher.offer(new byte[] {2}, 2, 2, 2L);
+            assertFalse(secondConsumed.await(100, TimeUnit.MILLISECONDS));
+            allowRelease.countDown();
+            assertTrue(secondConsumed.await(1, TimeUnit.SECONDS));
+            assertEquals(1L, consumer.metrics().failedFrames());
+        } finally {
+            allowRelease.countDown();
+            consumer.close();
+            dispatcher.close();
+        }
+        assertTrue(secondStopped.await(1, TimeUnit.SECONDS));
+    }
+
+    @Test
     public void reportsInferenceFailureAndReleasesHandlerOnWorkerExit() throws Exception {
         FrameDispatcher dispatcher = new FrameDispatcher(1);
         CountDownLatch entered = new CountDownLatch(1);

@@ -10,6 +10,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class LaneGeometryTest {
+    @Test
+    public void heldLaneAgeUsesOriginalMonotonicNanoseconds() {
+        LaneGeometry.LaneSnapshot snapshot = new LaneGeometry.LaneSnapshot(
+                2_000_000_000L, 0.02, 0.1, 3.5, Double.POSITIVE_INFINITY, 4);
+        assertEquals(250_000_000L, snapshot.ageNanos(2_250_000_000L));
+        assertEquals(2_000_000_000L, snapshot.ageNanos(4_000_000_000L));
+        assertEquals(-1L, snapshot.ageNanos(1_999_999_999L));
+        assertEquals(-1L, LaneGeometry.LaneSnapshot.INVALID.ageNanos(4_000_000_000L));
+        LaneGeometry.LaneSnapshot negativeOrigin = new LaneGeometry.LaneSnapshot(
+                -1_000_000_000L, 0.02, 0.1, 3.5, Double.POSITIVE_INFINITY, 4);
+        assertEquals(250_000_000L, negativeOrigin.ageNanos(-750_000_000L));
+    }
+
     private static final int WIDTH = 1280;
     private static final int HEIGHT = 720;
     private static final double LANE_WIDTH = LaneGeometry.DEFAULT_LANE_WIDTH_METERS;
@@ -47,7 +60,7 @@ public final class LaneGeometryTest {
             // longer monotonic and the solve legitimately fails. See the learner's clamp.
             double lower = Math.max(truePitch - 6.0,
                     AutoCalibrationLearner.horizonPitchDegrees(calibration,
-                            LaneDepartureDetector.ROI_TOP_ROW, HEIGHT));
+                            LaneDepartureDetector.ROI_TOP_ROW));
             double solved = LaneGeometry.solvePitchFromRatio(calibration, measured,
                     LaneDepartureDetector.ROI_BOTTOM_ROW, LaneDepartureDetector.ROI_TOP_ROW,
                     WIDTH, HEIGHT, lower, truePitch + 6.0);
@@ -107,7 +120,7 @@ public final class LaneGeometryTest {
     @Test
     public void offsetsAreSignedRightPositiveLeftNegative() {
         double rowY = LaneDepartureDetector.ROI_BOTTOM_ROW;
-        double width = LaneGeometry.laneWidthModelMeters(CALIBRATION, rowY, 8.0, LANE_WIDTH,
+        double width = LaneGeometry.laneWidthNormalized(CALIBRATION, rowY, 8.0, LANE_WIDTH,
                 WIDTH, HEIGHT);
 
         // Lane centre shifted left of the vehicle axis: the vehicle sits to the right of the lane, so
@@ -256,7 +269,7 @@ public final class LaneGeometryTest {
     public void widthMatchesIndependentCameraProjectionAcrossRows() {
         for (double row : new double[] {0.54, 0.68, 0.82}) {
             assertEquals(projectedWidth(CALIBRATION, row, 8.0),
-                    LaneGeometry.laneWidthModelMeters(CALIBRATION, row, 8.0,
+                    LaneGeometry.laneWidthNormalized(CALIBRATION, row, 8.0,
                             LANE_WIDTH, WIDTH, HEIGHT), 1.0e-9);
         }
     }

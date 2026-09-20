@@ -7,6 +7,41 @@ import org.junit.Test;
 
 public final class AdasDecisionEngineTest {
     @Test
+    public void distanceOnlyProjectionRetainsProximityButNeverSpeedBasedRisk() {
+        AdasDecisionEngine.Decision far = AdasDecisionEngine.distanceOnlyDecision(10.0, 8.0, true);
+        assertFalse(far.headwayWarning());
+        assertFalse(far.headwayCritical());
+        assertFalse(far.collisionDanger());
+        assertFalse(far.laneWarning());
+        assertTrue(far.events().isEmpty());
+
+        AdasDecisionEngine.Decision caution = AdasDecisionEngine.distanceOnlyDecision(7.0, 1.0, true);
+        assertTrue(caution.headwayWarning());
+        assertFalse(caution.headwayCritical());
+        AdasDecisionEngine.Decision close = AdasDecisionEngine.distanceOnlyDecision(3.0, 1.0, true);
+        assertTrue(close.headwayWarning());
+        assertTrue(close.headwayCritical());
+        assertTrue(close.events().isEmpty());
+        assertFalse(AdasDecisionEngine.distanceOnlyDecision(3.0, -1.0, true).headwayCritical());
+        assertFalse(AdasDecisionEngine.distanceOnlyDecision(3.0, 1.0, false).headwayWarning());
+        assertFalse(AdasDecisionEngine.distanceOnlyDecision(Double.NaN, 1.0, true).headwayWarning());
+    }
+
+    @Test
+    public void distanceOnlyProjectionDoesNotConsumeOrResetAudioCooldown() {
+        AdasDecisionEngine engine = new AdasDecisionEngine();
+        assertTrue(engine.update(new AdasDecisionEngine.Observation(
+                1000L, 10.0, 3.0, 0.0, 100.0, true)).events()
+                .contains(AdasDecisionEngine.Alert.HMW_CRITICAL));
+        AdasDecisionEngine.distanceOnlyDecision(3.0, 0.0, true);
+        assertTrue(engine.update(new AdasDecisionEngine.Observation(
+                1200L, 10.0, 3.0, 0.0, 100.0, true)).events().isEmpty());
+        assertTrue(engine.update(new AdasDecisionEngine.Observation(
+                5000L, 10.0, 3.0, 0.0, 100.0, true)).events()
+                .contains(AdasDecisionEngine.Alert.HMW_CRITICAL));
+    }
+
+    @Test
     public void emitsForwardCollisionWarningAfterThreeDangerFrames() {
         AdasDecisionEngine engine = new AdasDecisionEngine();
 

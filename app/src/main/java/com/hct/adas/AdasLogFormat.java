@@ -21,8 +21,8 @@ final class AdasLogFormat {
     }
 
     /**
-     * @param captureToHandoffMs time from capture to the producer's hand-off (sampling throttle plus
-     *                           the NV21 copy)
+     * @param captureToHandoffMs time from the sampled callback to hand-off (NV21 validation/copy;
+     *                           excludes waiting for the next sampling interval)
      * @param queueWaitMs        time the frame waited to be picked up
      * @param processingMs       time the worker spent handling the frame
      */
@@ -30,10 +30,21 @@ final class AdasLogFormat {
                             long queueWaitMs, long processingMs, String speed, String calibration,
                             String target, String lane, String alert) {
         return String.format(Locale.ROOT,
-                "[HEARTBEAT] FPS=%.1f | Age=%dms | Split=%d+%d+%dms"
+                "[HEARTBEAT] FPS=%.1f | HandledAge=%dms | Split=%d+%d+%dms"
                         + " | Speed=%s | Calib=%s | Target=%s | Lane=%s | Alert=%s",
                 captureFps, ageMs, captureToHandoffMs, queueWaitMs, processingMs,
                 speed, calibration, target, lane, alert);
+    }
+
+    /** Unlike handler timings, analysis age cannot appear fresh while inference is backing off. */
+    static String pipelineHealth(long analyzedAtNanos, long nowNanos, FrameDispatcher.Metrics queue,
+                                 long invalidFrames, long failures) {
+        long ageMs = analyzedAtNanos > 0L && nowNanos >= analyzedAtNanos
+                ? (nowNanos - analyzedAtNanos) / 1_000_000L : -1L;
+        return String.format(Locale.ROOT,
+                "[PIPELINE] AnalysisAge=%dms | Offered=%d Dropped=%d Discarded=%d Invalid=%d Failures=%d",
+                ageMs, queue.offeredFrames(), queue.droppedFrames(), queue.discardedFrames(),
+                invalidFrames, failures);
     }
 
     /** Logged once when the collision-risk condition first becomes measurable. */
@@ -112,7 +123,7 @@ final class AdasLogFormat {
         for (LaneGeometry.WidthSample sample : lane.widthSamples()) {
             builder.append(String.format(Locale.ROOT, " | r%d y=%.2f L=%s R=%s w=%s c=%.2f",
                     index++, sample.rowY(), coordinate(sample.leftX()), coordinate(sample.rightX()),
-                    coordinate(sample.widthPixels()), sample.confidence()));
+                    coordinate(sample.widthNormalized()), sample.confidence()));
         }
         if (index == 0) {
             builder.append(" | noRowsWithBothEdges");

@@ -16,7 +16,8 @@ public final class AdasCalibrationMode {
     public static boolean distanceReady(CalibrationStore.Status status,
                                         CameraCalibration calibration,
                                         int frameWidth, int frameHeight) {
-        if (calibration == null || !calibration.isUsableFor(frameWidth, frameHeight)) {
+        if (!CalibrationAlignment.isValid(calibration)
+                || !calibration.isUsableFor(frameWidth, frameHeight)) {
             return false;
         }
         return status == CalibrationStore.Status.WIZARD_COMPLETED

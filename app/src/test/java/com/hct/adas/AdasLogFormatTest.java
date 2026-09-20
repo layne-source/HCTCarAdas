@@ -16,6 +16,21 @@ import org.junit.Test;
  * is exercised here rather than a copy of the format strings.
  */
 public final class AdasLogFormatTest {
+    @Test
+    public void pipelineHealthSeparatesAnalysisFreshnessFromFrameHandoff() {
+        String line = AdasLogFormat.pipelineHealth(1_000_000_000L, 2_250_000_000L,
+                new FrameDispatcher.Metrics(100L, 7L, 3L), 2L, 4L);
+        assertTrue(line.contains("AnalysisAge=1250ms"));
+        assertTrue(line.contains("Offered=100"));
+        assertTrue(line.contains("Dropped=7"));
+        assertTrue(line.contains("Discarded=3"));
+        assertTrue(line.contains("Invalid=2"));
+        assertTrue(line.contains("Failures=4"));
+        assertTrue(AdasLogFormat.pipelineHealth(0L, 2_000_000_000L,
+                new FrameDispatcher.Metrics(0L, 0L, 0L), 0L, 0L).contains("AnalysisAge=-1ms"));
+        assertTrue(AdasLogFormat.pipelineHealth(3_000_000_000L, 2_000_000_000L,
+                new FrameDispatcher.Metrics(0L, 0L, 0L), 0L, 0L).contains("AnalysisAge=-1ms"));
+    }
 
     @Test
     public void heartbeatRendersEveryFieldWithoutConversionErrors() {

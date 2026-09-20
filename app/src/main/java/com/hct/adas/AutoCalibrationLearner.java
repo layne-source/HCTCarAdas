@@ -76,8 +76,6 @@ public final class AutoCalibrationLearner {
      */
     public static final double MAX_CONVERGENCE_MAD_DEGREES = 0.40;
     public static final double ONLINE_TRACKING_RATE = 0.002;
-    /** Width ratio agreement required between model and measurement, in relative terms. */
-    public static final double WIDTH_RATIO_TOLERANCE = 0.25;
     /**
      * How far the window-average implied pitch may sit from the configured mounting angle before the
      * user is asked to re-aim. Sized above the single-frame accuracy of the lane-width prior (about
@@ -412,8 +410,7 @@ public final class AutoCalibrationLearner {
         // The bracket is clamped just above the pitch at which the far sample row reaches the horizon.
         // Past that horizon the depression angle changes sign, the ratio stops being monotonic in
         // pitch, and the solve would either fail or invert to a nonsense angle.
-        double horizonPitch = horizonPitchDegrees(calibration,
-                farRow, frameHeight);
+        double horizonPitch = horizonPitchDegrees(calibration, farRow);
         double lowerBound = Math.max(calibration.pitchDegrees() - PITCH_SOLVE_RANGE_DEGREES,
                 horizonPitch);
         double upperBound = Math.max(calibration.pitchDegrees() + PITCH_SOLVE_RANGE_DEGREES,
@@ -426,7 +423,7 @@ public final class AutoCalibrationLearner {
      * Pitch at which the given row looks exactly at the horizon. The lane width model is only defined
      * for rows below the horizon, so any bracket bound must stay above this angle.
      */
-    static double horizonPitchDegrees(CameraCalibration calibration, double rowY, int frameHeight) {
+    static double horizonPitchDegrees(CameraCalibration calibration, double rowY) {
         if (calibration == null || !Double.isFinite(rowY)) {
             return Double.NaN;
         }

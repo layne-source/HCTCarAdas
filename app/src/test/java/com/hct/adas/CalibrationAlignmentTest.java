@@ -89,6 +89,18 @@ public final class CalibrationAlignmentTest {
     }
 
     @Test
+    public void savedProfileRejectsOffImageHorizonEvenWithSupportedPitch() {
+        CameraCalibration invalid = new CameraCalibration(1280, 720, 1.55, 4.0, 0.5, 14.0);
+        assertFalse(CalibrationAlignment.isValid(invalid));
+    }
+
+    @Test
+    public void confirmedImageEdgeHorizonSurvivesSavedProfileValidation() {
+        CameraCalibration lens = new CameraCalibration(1280, 720, 1.55, 4.0, 0.5, 8.0);
+        assertTrue(CalibrationAlignment.isValid(CalibrationAlignment.confirm(lens, 0.0, 0.5)));
+    }
+
+    @Test
     public void boundaryPitchSurvivesFloatingPointRoundTrip() {
         for (double pitch : new double[] {2.0, 14.0}) {
             double horizon = 0.5 - (640.0 / 720.0) * Math.tan(Math.toRadians(pitch));

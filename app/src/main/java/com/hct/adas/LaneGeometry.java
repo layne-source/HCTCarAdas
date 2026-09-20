@@ -29,8 +29,6 @@ public final class LaneGeometry {
      */
     public static final double MIN_ABS_CURVATURE = 1.0e-4;
 
-    private static final double DEGREES_PER_RADIAN = 180.0 / Math.PI;
-
     private LaneGeometry() {
     }
 
@@ -44,8 +42,8 @@ public final class LaneGeometry {
      * so it carries both edges and the depth they were measured at.
      */
     public record WidthSample(double rowY, double leftX, double rightX, double confidence) {
-        /** Pixel width between the two boundaries; NaN when an edge is missing. */
-        public double widthPixels() {
+        /** Image-width-normalized distance between boundaries; NaN when an edge is missing. */
+        public double widthNormalized() {
             return Double.isFinite(leftX) && Double.isFinite(rightX) ? rightX - leftX : Double.NaN;
         }
     }
@@ -66,6 +64,13 @@ public final class LaneGeometry {
 
         public boolean valid() {
             return sampleCount > 0 && Double.isFinite(centerOffsetNormalized);
+        }
+
+        /** Age on the capture's System.nanoTime clock; invalid/future measurements are unavailable. */
+        public long ageNanos(long nowNanos) {
+            if (!valid() || nowNanos < timestampNanos) return -1L;
+            long age = nowNanos - timestampNanos;
+            return age >= 0L ? age : -1L;
         }
 
         public boolean curvatureValid() {
@@ -150,7 +155,7 @@ public final class LaneGeometry {
      * <p>Height and horizontal focal length are therefore the two error sources of any absolute lane
      * width measurement, which is why the calibrated mounting angle is not replaced by this model.
      */
-    public static double laneWidthModelMeters(CameraCalibration calibration, double rowY,
+    public static double laneWidthNormalized(CameraCalibration calibration, double rowY,
                                               double pitchDegrees, double laneWidthMeters,
                                               int frameWidth, int frameHeight) {
         if (calibration == null || !Double.isFinite(rowY) || !Double.isFinite(pitchDegrees)
@@ -179,9 +184,9 @@ public final class LaneGeometry {
         // On a road descending away from the camera a larger row value is closer, so the near sample
         // sits at the larger row. Taking these the wrong way round makes the model ratio the inverse
         // of the measurement and the solve silently fails.
-        double near = laneWidthModelMeters(calibration, nearRow, pitchDegrees, laneWidthMeters,
+        double near = laneWidthNormalized(calibration, nearRow, pitchDegrees, laneWidthMeters,
                 frameWidth, frameHeight);
-        double far = laneWidthModelMeters(calibration, farRow, pitchDegrees, laneWidthMeters,
+        double far = laneWidthNormalized(calibration, farRow, pitchDegrees, laneWidthMeters,
                 frameWidth, frameHeight);
         if (!Double.isFinite(near) || !Double.isFinite(far) || far <= 0.0) {
             return Double.NaN;
@@ -199,8 +204,8 @@ public final class LaneGeometry {
         if (near == null || far == null) {
             return Double.NaN;
         }
-        double nearWidth = near.widthPixels();
-        double farWidth = far.widthPixels();
+        double nearWidth = near.widthNormalized();
+        double farWidth = far.widthNormalized();
         if (!Double.isFinite(nearWidth) || !Double.isFinite(farWidth)
                 || nearWidth <= 0.0 || farWidth <= 0.0) {
             return Double.NaN;
@@ -230,9 +235,9 @@ public final class LaneGeometry {
                 || measuredWidthNormalized <= 0.0 || !(lowerPitchDegrees < upperPitchDegrees)) {
             return Double.NaN;
         }
-        double lowWidth = laneWidthModelMeters(calibration, rowY, lowerPitchDegrees,
+        double lowWidth = laneWidthNormalized(calibration, rowY, lowerPitchDegrees,
                 laneWidthMeters, frameWidth, frameHeight);
-        double highWidth = laneWidthModelMeters(calibration, rowY, upperPitchDegrees,
+        double highWidth = laneWidthNormalized(calibration, rowY, upperPitchDegrees,
                 laneWidthMeters, frameWidth, frameHeight);
         if (!Double.isFinite(lowWidth) || !Double.isFinite(highWidth)
                 || (lowWidth - measuredWidthNormalized) * (highWidth - measuredWidthNormalized) > 0.0) {
@@ -242,7 +247,7 @@ public final class LaneGeometry {
         double high = upperPitchDegrees;
         for (int i = 0; i < 40 && high - low > 1.0e-4; i++) {
             double mid = 0.5 * (low + high);
-            double midWidth = laneWidthModelMeters(calibration, rowY, mid, laneWidthMeters,
+            double midWidth = laneWidthNormalized(calibration, rowY, mid, laneWidthMeters,
                     frameWidth, frameHeight);
             if (!Double.isFinite(midWidth)) {
                 return Double.NaN;
@@ -306,14 +311,14 @@ public final class LaneGeometry {
     /**
      * Physical lane width implied by a measurement at the configured pitch, used to report the metric
      * offset and to detect a boundary that is not the ego lane edge. This is the exact inverse of
-     * {@link #laneWidthModelMeters}: {@code W = w * H * cos(beta) / (f_x * sin(theta))}.
+     * {@link #laneWidthNormalized}: {@code W = w * H * cos(beta) / (f_x * sin(theta))}.
      */
     public static double laneWidthFromSample(CameraCalibration calibration, WidthSample sample,
                                              double pitchDegrees, int frameWidth, int frameHeight) {
         if (calibration == null || sample == null || !Double.isFinite(pitchDegrees)) {
             return Double.NaN;
         }
-        double width = sample.widthPixels();
+        double width = sample.widthNormalized();
         if (!Double.isFinite(width) || width <= 0.0) {
             return Double.NaN;
         }
@@ -344,8 +349,8 @@ public final class LaneGeometry {
                                         double pitchDegrees, WidthSample nearSample,
                                         java.util.List<WidthSample> samples,
                                         int frameWidth, int frameHeight) {
-        if (nearSample == null || !Double.isFinite(nearSample.widthPixels())
-                || nearSample.widthPixels() <= 0.0) {
+        if (nearSample == null || !Double.isFinite(nearSample.widthNormalized())
+                || nearSample.widthNormalized() <= 0.0) {
             return LaneSnapshot.INVALID;
         }
         double centerOffset = 0.5 * (nearSample.leftX() + nearSample.rightX()) - 0.5;
@@ -358,7 +363,7 @@ public final class LaneGeometry {
                 frameWidth, frameHeight);
         return new LaneSnapshot(timestampNanos, vehicleOffsetNormalized,
                 Double.isFinite(laneWidth)
-                        ? vehicleOffsetNormalized / nearSample.widthPixels() * laneWidth : Double.NaN,
+                        ? vehicleOffsetNormalized / nearSample.widthNormalized() * laneWidth : Double.NaN,
                 laneWidth, radius, samples == null ? 0 : samples.size());
     }
 
@@ -392,7 +397,7 @@ public final class LaneGeometry {
             if (sample == null) {
                 continue;
             }
-            double width = sample.widthPixels();
+            double width = sample.widthNormalized();
             if (!Double.isFinite(width) || width <= 0.0) {
                 continue;
             }
@@ -506,9 +511,5 @@ public final class LaneGeometry {
             return "";
         }
         return curvatureRadiusMeters < 0.0 ? "Left" : "Right";
-    }
-
-    static double degreesPerRadian() {
-        return DEGREES_PER_RADIAN;
     }
 }

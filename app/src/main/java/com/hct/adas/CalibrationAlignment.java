@@ -10,6 +10,21 @@ public final class CalibrationAlignment {
     private CalibrationAlignment() {
     }
 
+    /** Validates saved profiles using the same installation limits as line confirmation. */
+    public static boolean isValid(CameraCalibration calibration) {
+        if (calibration == null) return false;
+        double pitch = calibration.pitchDegrees();
+        if (pitch < MIN_PITCH_DEGREES - ROUNDING_TOLERANCE
+                || pitch > MAX_PITCH_DEGREES + ROUNDING_TOLERANCE) return false;
+        // Use the raw horizon: clamping an off-image horizon must not validate a profile.
+        double horizon = calibration.principalPointYNormalized()
+                - calibration.focalLengthYNormalized() * Math.tan(Math.toRadians(pitch));
+        if (horizon < -ROUNDING_TOLERANCE || horizon > 1.0 + ROUNDING_TOLERANCE) return false;
+        return evaluate(Math.max(0.0, Math.min(1.0, horizon)), calibration.guideCenterXNormalized(),
+                calibration.focalLengthYNormalized(),
+                calibration.principalPointYNormalized()).valid();
+    }
+
     public record Result(boolean valid, boolean pitchOutOfRange, boolean centerOutOfRange,
                          double pitchDegrees) {
     }

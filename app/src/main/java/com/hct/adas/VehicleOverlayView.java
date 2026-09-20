@@ -86,8 +86,8 @@ public final class VehicleOverlayView extends View {
     private static final long SOLID_GRACE_MILLIS = 250L;
     /** How much narrower the held corridor is drawn at its far end, for perspective. */
     private static final float FAR_SCALE = 0.45f;
-    /** Wall-clock time of the newest frame that actually carried a lane, or 0 when none did. */
-    private long lastLaneSeenMillis;
+    /** Monotonic capture time of the newest frame that carried a lane, or 0 when none did. */
+    private long lastLaneSeenNanos;
     /** Style of the newest lane drawing, for the diagnostic log. */
     private String laneDrawStyle = "none";
     private long lastDrawLogNanos;
@@ -155,7 +155,7 @@ public final class VehicleOverlayView extends View {
         if (nextLane != null && nextLane.available()) {
             // Only a frame that really carried a lane refreshes the "seen" clock: a dropped lane has to
             // age, otherwise the corridor would be held forever.
-            lastLaneSeenMillis = System.currentTimeMillis();
+            lastLaneSeenNanos = result.timestampNanos();
         }
         this.lane = nextLane;
         this.laneSnapshot = laneSnapshot;
@@ -166,6 +166,7 @@ public final class VehicleOverlayView extends View {
         targetLabel = makeTargetLabel();
         debugLabels = makeDebugLabels();
         if (result == null) {
+            lastLaneSeenNanos = 0L;
             setGuideInput(null);
             resetVisualAnimation();
         }
@@ -240,29 +241,9 @@ public final class VehicleOverlayView extends View {
      * dropped frames are invisible; only a sustained loss degrades to the dashed memory style.
      */
     private boolean freshLane() {
-        return lastLaneSeenMillis > 0L
-                && System.currentTimeMillis() - lastLaneSeenMillis <= SOLID_GRACE_MILLIS;
-    }
-
-    /** Style and geometry of the newest lane drawing, for the 1 Hz diagnostic log. */
-    String laneDrawStyle() {
-        return laneDrawStyle;
-    }
-
-    float laneDrawHoodY() {
-        return laneDrawHoodY;
-    }
-
-    double laneDrawHalfWidth() {
-        return laneDrawHalfWidth;
-    }
-
-    double laneDrawNearRow() {
-        return laneDrawNearRow;
-    }
-
-    double laneDrawFarRow() {
-        return laneDrawFarRow;
+        long age = System.nanoTime() - lastLaneSeenNanos;
+        return lastLaneSeenNanos > 0L && age >= 0L
+                && age <= SOLID_GRACE_MILLIS * 1_000_000L;
     }
 
     public void setCalibration(CameraCalibration calibration) {
@@ -512,8 +493,8 @@ public final class VehicleOverlayView extends View {
         lastDrawLogNanos = now;
         Log.i(TAG, String.format(Locale.ROOT,
                 "[LANE-DRAW] style=%s age=%dms hoodY=%s span=[%s..%s] halfWidth=%s refLines=%s",
-                laneDrawStyle, lastLaneSeenMillis == 0L ? -1L
-                        : System.currentTimeMillis() - lastLaneSeenMillis,
+                laneDrawStyle, lastLaneSeenNanos == 0L ? -1L
+                        : (now - lastLaneSeenNanos) / 1_000_000L,
                 number(laneDrawHoodY), number(laneDrawNearRow), number(laneDrawFarRow),
                 number(laneDrawHalfWidth), referenceLines));
     }
@@ -593,10 +574,6 @@ public final class VehicleOverlayView extends View {
             // No measurement and no recent memory: draw nothing rather than inventing a corridor.
             laneDrawStyle = "none";
             return;
-        }
-        if (live && lastLaneSeenMillis == 0L) {
-            // First frame that carries a lane in this session.
-            lastLaneSeenMillis = System.currentTimeMillis();
         }
         if (!live) {
             drawHeldLane(canvas, left, top, width, height, hoodY);
@@ -715,10 +692,7 @@ public final class VehicleOverlayView extends View {
 
     /** Age of the held measurement, or -1 when there is nothing held. */
     private long heldAgeNanos() {
-        if (laneSnapshot == null || !laneSnapshot.valid() || laneSnapshot.timestampNanos() <= 0L) {
-            return -1L;
-        }
-        return Math.max(0L, System.currentTimeMillis() - laneSnapshot.timestampNanos()) * 1_000_000L;
+        return laneSnapshot == null ? -1L : laneSnapshot.ageNanos(System.nanoTime());
     }
 
     /** Boundary colour: grey for diagnostic/un-calibrated geometry, then hazard/caution colours. */
