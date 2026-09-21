@@ -26,7 +26,6 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
-import android.widget.Button;
 import android.widget.RadioButton;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -1255,11 +1254,11 @@ public final class MainActivity extends Activity {
                 : AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
                         frame.frameWidth(), frame.frameHeight()) ? "已校准" : "需校准");
         AlertDialog dialog = new AlertDialog.Builder(this, R.style.Theme_HctAdas_SettingsDialog)
-                .setView(content, 0, 0, 0, 0)
-                .setNegativeButton("关闭", null)
+                .setView(content)
                 .create();
         settingsDialog = dialog;
         overlayView.setGuideSettingsOpen(true);
+        dialog.setCanceledOnTouchOutside(true);
         dialog.setOnDismissListener(ignored -> {
             settingsDialog = null;
             overlayView.setGuideSettingsOpen(false);
@@ -1299,18 +1298,12 @@ public final class MainActivity extends Activity {
             window.setWindowAnimations(0);
             window.setDimAmount(0.66f);
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
-            int maxWidth = (int) (380 * getResources().getDisplayMetrics().density);
+            int maxWidth = (int) (420 * getResources().getDisplayMetrics().density);
             WindowManager.LayoutParams attributes = window.getAttributes();
             attributes.width = Math.min(maxWidth, (int) (screenWidth * 0.88f));
             attributes.height = WindowManager.LayoutParams.WRAP_CONTENT;
             window.setAttributes(attributes);
         }
-        dialog.setOnShowListener(ignored -> {
-            Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-            negative.setTextColor(0xFF9AA5B1);
-            negative.setAllCaps(false);
-            negative.setTextSize(14f);
-        });
         dialog.show();
     }
 

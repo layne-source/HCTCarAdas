@@ -14,10 +14,10 @@
         android:layout_height="wrap_content"
         android:background="@drawable/settings_surface"
         android:orientation="vertical"
-        android:paddingStart="22dp"
-        android:paddingTop="20dp"
-        android:paddingEnd="22dp"
-        android:paddingBottom="14dp">
+        android:paddingStart="20dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="16dp">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -30,7 +30,7 @@
                 android:layout_height="wrap_content"
                 android:text="ADAS 设置"
                 android:textColor="@color/adas_text_primary"
-                android:textSize="20sp"
+                android:textSize="19sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -45,13 +45,13 @@
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="14dp"
             android:background="@color/adas_divider" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="14dp"
             android:text="车辆类型"
             android:textColor="@color/adas_text_secondary"
             android:textSize="12sp"
@@ -68,7 +68,7 @@
             <RadioButton
                 android:id="@+id/rb_sedan"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="40dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
@@ -84,7 +84,7 @@
             <RadioButton
                 android:id="@+id/rb_suv"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="40dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
@@ -100,7 +100,7 @@
             <RadioButton
                 android:id="@+id/rb_truck"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="40dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
@@ -116,8 +116,8 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="镜头水平视场角"
+            android:layout_marginTop="16dp"
+            android:text="摄像头视野范围"
             android:textColor="@color/adas_text_secondary"
             android:textSize="12sp"
             android:textStyle="bold" />
@@ -133,7 +133,7 @@
             <RadioButton
                 android:id="@+id/rb_fov_90"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="40dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
@@ -141,7 +141,8 @@
                 android:gravity="center"
                 android:minHeight="0dp"
                 android:padding="0dp"
-                android:text="90°"
+                android:contentDescription="窄视野（90度）"
+                android:text="窄视野"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -149,7 +150,7 @@
             <RadioButton
                 android:id="@+id/rb_fov_100"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="40dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
@@ -157,7 +158,8 @@
                 android:gravity="center"
                 android:minHeight="0dp"
                 android:padding="0dp"
-                android:text="100°"
+                android:contentDescription="标准视野（100度）"
+                android:text="标准视野"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -165,14 +167,15 @@
             <RadioButton
                 android:id="@+id/rb_fov_120"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="40dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
                 android:minHeight="0dp"
                 android:padding="0dp"
-                android:text="120°"
+                android:contentDescription="广视野（120度）"
+                android:text="广视野"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -181,14 +184,14 @@
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="16dp"
             android:background="@color/adas_divider" />
 
         <LinearLayout
             android:id="@+id/calibration_action"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="16dp"
+            android:layout_height="48dp"
+            android:layout_marginTop="14dp"
             android:background="@drawable/settings_action"
             android:clickable="true"
             android:focusable="true"

@@ -89,7 +89,7 @@
         android:onClick="openCalibrationFromSettings"
         android:padding="10dp"
         android:src="@drawable/ic_settings_adas"
-        android:tint="#FF72D8C8" />
+        android:tint="@color/adas_accent" />
 
     <FrameLayout
         android:id="@+id/calibration_overlay"

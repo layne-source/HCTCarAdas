@@ -1,16 +1,17 @@
 <resources>
-    <color name="adas_background">#FF0B1117</color>
-    <color name="adas_surface_top">#F0192733</color>
-    <color name="adas_surface_bottom">#F00C141C</color>
-    <color name="adas_surface_border">#546C8791</color>
-    <color name="adas_divider">#304A5C68</color>
-    <color name="adas_accent">#FF72D8C8</color>
-    <color name="adas_accent_bright">#FF8DEBDE</color>
-    <color name="adas_text_primary">#FFF4F7FA</color>
-    <color name="adas_text_secondary">#FF9FB0BC</color>
-    <color name="adas_option_background">#B61B2A35</color>
-    <color name="adas_option_selected">#E02B6670</color>
-    <color name="adas_option_pressed">#F03B7D85</color>
-    <color name="adas_option_border">#5572D8C8</color>
-    <color name="adas_option_text_checked">#FF071211</color>
+    <color name="adas_background">#FF0F1012</color>
+    <color name="adas_surface_top">#FF1A1B1E</color>
+    <color name="adas_surface_bottom">#FF1A1B1E</color>
+    <color name="adas_surface_border">#FF2E3035</color>
+    <color name="adas_divider">#FF303238</color>
+    <color name="adas_accent">#FF3E6AE1</color>
+    <color name="adas_accent_bright">#FF6B8FF0</color>
+    <color name="adas_text_primary">#FFF5F5F5</color>
+    <color name="adas_text_secondary">#FF9A9CA1</color>
+    <color name="adas_option_background">#FF25272B</color>
+    <color name="adas_action_pressed">#FF32353B</color>
+    <color name="adas_option_selected">#FF3E6AE1</color>
+    <color name="adas_option_pressed">#FF3358B9</color>
+    <color name="adas_option_border">#FF3A3C42</color>
+    <color name="adas_option_text_checked">#FFFFFFFF</color>
 </resources>
