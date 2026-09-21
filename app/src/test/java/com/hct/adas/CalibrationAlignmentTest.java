@@ -69,6 +69,19 @@ public final class CalibrationAlignmentTest {
     }
 
     @Test
+    public void coverPreviewFillsWideSafeAreaByCroppingVerticalEdges() {
+        CalibrationAlignment.Viewport viewport = CalibrationAlignment.fitCover(
+                1280, 640, 1280, 720);
+
+        assertEquals(0.0, viewport.left(), 0.0001);
+        assertEquals(-40.0, viewport.top(), 0.0001);
+        assertEquals(1280.0, viewport.width(), 0.0001);
+        assertEquals(720.0, viewport.height(), 0.0001);
+        assertEquals(640.0, viewport.viewY(680.0 / 720.0), 0.0001);
+        assertEquals(680.0 / 720.0, viewport.imageY(640.0), 0.0001);
+    }
+
+    @Test
     public void confirmationUsesSelectedFovAndPersistsFixedGuideCenter() {
         CameraCalibration selectedLens = CameraCalibration.fromWizard(
                 1280, 720, 1.55, 120.0, 8.0);

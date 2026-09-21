@@ -90,7 +90,7 @@ public final class CalibrationOverlayView extends View {
 
     private void updateViewport() {
         viewport = draft == null || getWidth() <= 0 || getHeight() <= 0 ? null
-                : CalibrationAlignment.fitCenter(getWidth(), getHeight(),
+                : CalibrationAlignment.fitCover(getWidth(), getHeight(),
                         draft.imageWidth(), draft.imageHeight());
     }
 

@@ -134,7 +134,7 @@ public final class MainActivity extends Activity {
     private long dangerStartedNanos;
     private long previousCaptured;
     private long previousMetricsTime;
-    /** Last preview letterbox scale actually applied, so an unchanged fit is not re-applied. */
+    /** Last preview cover scale actually applied, so an unchanged fit is not re-applied. */
     private float appliedScaleX = Float.NaN;
     private float appliedScaleY = Float.NaN;
     private long previousProcessedTimestampNanos;
@@ -1390,9 +1390,9 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * Letterboxes the preview to the frame aspect ratio. The scale factors only change when the view
-     * size or the frame size changes, so identical inputs are skipped: this runs from the 250 ms
-     * metrics tick and a redundant setTransform would invalidate the view four times a second.
+     * Covers the safe content area with the frame aspect ratio. The scale factors only change when
+     * the view size or the frame size changes, so identical inputs are skipped: this runs from the
+     * 250 ms metrics tick and a redundant setTransform would invalidate the view four times a second.
      */
     private void fitCurrentPreview() {
         UsbCameraSource.PreviewSnapshot frame = cameraSource.previewSnapshot();
@@ -1449,7 +1449,7 @@ public final class MainActivity extends Activity {
         if (previewView.getWidth() == 0 || previewView.getHeight() == 0) {
             return;
         }
-        CalibrationAlignment.Viewport viewport = CalibrationAlignment.fitCenter(
+        CalibrationAlignment.Viewport viewport = CalibrationAlignment.fitCover(
                 previewView.getWidth(), previewView.getHeight(), frameWidth, frameHeight);
         float scaleX = (float) (viewport.width() / previewView.getWidth());
         float scaleY = (float) (viewport.height() / previewView.getHeight());

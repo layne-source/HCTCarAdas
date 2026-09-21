@@ -17,6 +17,7 @@ public final class FixedGuideRenderer {
     private static final float ARROW_FADE_IN_SPAN = 0.08f;
     private static final float WARNING_ARROW_PHASE = 0.18f;
     private static final float WARNING_ARROW_OPACITY = 0.35f;
+    private static final float GUIDE_BOTTOM_MARGIN_DP = 8.0f;
 
     private final float density;
     private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -73,11 +74,16 @@ public final class FixedGuideRenderer {
         if (viewWidth <= 0 || viewHeight <= 0) {
             return false;
         }
-        geometry = FixedGuideGeometry.fromCalibration(calibration, frameWidth, frameHeight);
+        viewport = CalibrationAlignment.fitCover(viewWidth, viewHeight, frameWidth, frameHeight);
+        // Anchor the near edge just above the safe content bottom (the DockBar inset), rather
+        // than leaving a fixed source-image percentage that changes with the display aspect.
+        float bottomMargin = Math.min(viewHeight * 0.1f, GUIDE_BOTTOM_MARGIN_DP * density);
+        double nearImageY = viewport.imageY(viewHeight - bottomMargin);
+        geometry = FixedGuideGeometry.fromCalibration(calibration, frameWidth, frameHeight,
+                nearImageY);
         if (geometry == null) {
             return false;
         }
-        viewport = CalibrationAlignment.fitCenter(viewWidth, viewHeight, frameWidth, frameHeight);
         imageBounds.set((float) viewport.left(), (float) viewport.top(),
                 (float) (viewport.left() + viewport.width()),
                 (float) (viewport.top() + viewport.height()));

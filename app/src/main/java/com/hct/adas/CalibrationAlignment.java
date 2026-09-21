@@ -29,7 +29,7 @@ public final class CalibrationAlignment {
                          double pitchDegrees) {
     }
 
-    /** Source-image viewport, matching the preview's centered, aspect-preserving fit. */
+    /** Source-image viewport mapping between normalized frame coordinates and a view. */
     public record Viewport(double left, double top, double width, double height) {
         public double viewX(double imageX) { return left + imageX * width; }
         public double viewY(double imageY) { return top + imageY * height; }
@@ -41,10 +41,22 @@ public final class CalibrationAlignment {
     }
 
     public static Viewport fitCenter(int viewWidth, int viewHeight, int imageWidth, int imageHeight) {
+        return fit(viewWidth, viewHeight, imageWidth, imageHeight, false);
+    }
+
+    /** Source-image viewport that fills the view and crops only outside the visible image area. */
+    public static Viewport fitCover(int viewWidth, int viewHeight, int imageWidth, int imageHeight) {
+        return fit(viewWidth, viewHeight, imageWidth, imageHeight, true);
+    }
+
+    private static Viewport fit(int viewWidth, int viewHeight, int imageWidth, int imageHeight,
+                                boolean cover) {
         if (viewWidth <= 0 || viewHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) {
             throw new IllegalArgumentException("viewport dimensions must be positive");
         }
-        double scale = Math.min((double) viewWidth / imageWidth, (double) viewHeight / imageHeight);
+        double scale = cover
+                ? Math.max((double) viewWidth / imageWidth, (double) viewHeight / imageHeight)
+                : Math.min((double) viewWidth / imageWidth, (double) viewHeight / imageHeight);
         double width = imageWidth * scale;
         double height = imageHeight * scale;
         return new Viewport((viewWidth - width) / 2.0, (viewHeight - height) / 2.0, width, height);

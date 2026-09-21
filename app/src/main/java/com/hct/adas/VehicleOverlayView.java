@@ -18,7 +18,7 @@ import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Displays source-normalized detections in the same letterboxed viewport as the preview. */
+/** Displays source-normalized detections in the same cropped viewport as the preview. */
 public final class VehicleOverlayView extends View {
     private static final String TAG = "HctAdasCore";
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -290,7 +290,7 @@ public final class VehicleOverlayView extends View {
         }
         if (imageViewport == null || viewportFrameWidth != frameWidth || viewportFrameHeight != frameHeight
                 || viewportViewWidth != getWidth() || viewportViewHeight != getHeight()) {
-            imageViewport = CalibrationAlignment.fitCenter(getWidth(), getHeight(), frameWidth, frameHeight);
+            imageViewport = CalibrationAlignment.fitCover(getWidth(), getHeight(), frameWidth, frameHeight);
             viewportFrameWidth = frameWidth;
             viewportFrameHeight = frameHeight;
             viewportViewWidth = getWidth();

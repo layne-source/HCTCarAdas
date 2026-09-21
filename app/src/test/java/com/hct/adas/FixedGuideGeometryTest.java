@@ -29,6 +29,17 @@ public final class FixedGuideGeometryTest {
     }
 
     @Test
+    public void templateAcceptsDisplayAnchoredNearRow() {
+        FixedGuideGeometry geometry = FixedGuideGeometry.fromCalibration(
+                calibration(1280, 720, FIXTURE_PITCH, 0.56), 1280, 720, 0.94);
+
+        assertNotNull(geometry);
+        assertEquals(0.94, geometry.nearY(), EPSILON);
+        assertEquals(0.46, geometry.farY(), EPSILON);
+        assertEquals(0.22, geometry.halfWidthAt(0.94), EPSILON);
+    }
+
+    @Test
     public void letterboxed720pGuideUsesImageCoordinates() {
         FixedGuideGeometry geometry = FixedGuideGeometry.fromCalibration(
                 calibration(1280, 720, FIXTURE_PITCH, 0.56), 1280, 720);
