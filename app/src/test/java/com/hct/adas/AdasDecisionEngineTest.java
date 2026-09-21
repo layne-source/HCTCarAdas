@@ -54,6 +54,19 @@ public final class AdasDecisionEngineTest {
     }
 
     @Test
+    public void retainsCriticalHeadwayEventWhenFcwAndHmwOverlap() {
+        AdasDecisionEngine engine = new AdasDecisionEngine();
+
+        engine.update(observation(0L, 60.0, 20.0, 10.0, 1000.0, true));
+        engine.update(observation(100L, 60.0, 15.0, 10.0, 1000.0, true));
+        AdasDecisionEngine.Decision overlap = engine.update(
+                observation(200L, 60.0, 4.0, 10.0, 1000.0, true));
+
+        assertTrue(overlap.events().contains(AdasDecisionEngine.Alert.FCW));
+        assertTrue(overlap.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL));
+    }
+
+    @Test
     public void exposesHeadwayWarningWhileTargetStaysTooClose() {
         AdasDecisionEngine engine = new AdasDecisionEngine();
 

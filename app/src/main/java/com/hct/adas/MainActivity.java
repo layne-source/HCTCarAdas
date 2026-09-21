@@ -27,6 +27,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.RadioButton;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
@@ -93,6 +94,7 @@ public final class MainActivity extends Activity {
     private LaneGeometry.LaneSnapshot heldLaneGeometry = LaneGeometry.LaneSnapshot.INVALID;
     private final AdasDecisionEngine decisionEngine = new AdasDecisionEngine();
     private AlertAudio alertAudio;
+    private AlertPreferences alertPreferences;
     private LocationManager locationManager;
     private volatile double egoSpeedKmh = Double.NaN;
     private volatile long speedTimestampNanos;
@@ -207,6 +209,7 @@ public final class MainActivity extends Activity {
         });
         content.requestApplyInsets();
         calibrationStore = new CalibrationStore(this);
+        alertPreferences = new AlertPreferences(this);
         calibration = calibrationStore.load();
         calibrationStatus = calibrationStore.loadStatus();
         calibrationProgress = calibrationStore.loadProgress();
@@ -495,9 +498,32 @@ public final class MainActivity extends Activity {
         alertAudio = null;
         try {
             alertAudio = new AlertAudio(this);
+            applyAlertAudioSettings();
         } catch (IOException | RuntimeException failure) {
             Log.w(TAG, "Alert audio unavailable", failure);
         }
+    }
+
+    private void bindAlertSwitch(Switch control, AdasDecisionEngine.Alert alert) {
+        control.setChecked(alertPreferences.isEnabled(alert));
+        control.setOnCheckedChangeListener((button, enabled) -> {
+            alertPreferences.setEnabled(alert, enabled);
+            if (alertAudio != null) {
+                alertAudio.setAlertEnabled(alert, enabled);
+            }
+        });
+    }
+
+    private void applyAlertAudioSettings() {
+        if (alertAudio == null || alertPreferences == null) {
+            return;
+        }
+        alertAudio.setAlertEnabled(AdasDecisionEngine.Alert.FCW,
+                alertPreferences.isEnabled(AdasDecisionEngine.Alert.FCW));
+        alertAudio.setAlertEnabled(AdasDecisionEngine.Alert.HMW_CRITICAL,
+                alertPreferences.isEnabled(AdasDecisionEngine.Alert.HMW_CRITICAL));
+        alertAudio.setAlertEnabled(AdasDecisionEngine.Alert.LVSA,
+                alertPreferences.isEnabled(AdasDecisionEngine.Alert.LVSA));
     }
 
     @Override
@@ -1082,7 +1108,7 @@ public final class MainActivity extends Activity {
 
         String[] scenarioNames = AdasCalibrationMode.LDW_ENABLED
                 ? new String[] {
-                "🔊 扬声器发声测试 (测试车机喇叭通路)",
+                "🔊 扬声器发声测试 (独立测试，不受状态开关影响)",
                 "1. FCW 紧急碰撞测试 (60km/h 高速前车急刹/逼近)",
                 "2. HMW 极近车距测试 (25km/h 跟车贴近至 3.5m 报警)",
                 "3. LDW 车道偏离测试 (65km/h 车辆压线偏离报警)",
@@ -1090,7 +1116,7 @@ public final class MainActivity extends Activity {
                 "5. 行车自标定收敛测试 (自动学习灭点 0% -> 100%)"
         }
                 : new String[] {
-                "🔊 扬声器发声测试 (测试车机喇叭通路)",
+                "🔊 扬声器发声测试 (独立测试，不受状态开关影响)",
                 "1. FCW 紧急碰撞测试 (60km/h 高速前车急刹/逼近)",
                 "2. HMW 极近车距测试 (25km/h 跟车贴近至 3.5m 报警)",
                 "3. LVSA 前车起步测试 (红灯静止等候 / 前车起步驶离)"
@@ -1225,6 +1251,9 @@ public final class MainActivity extends Activity {
         RadioButton rb120 = content.findViewById(R.id.rb_fov_120);
         TextView calibrationStatusView = content.findViewById(R.id.calibration_status);
         View calibrationAction = content.findViewById(R.id.calibration_action);
+        Switch fcwSoundSwitch = content.findViewById(R.id.switch_fcw_sound);
+        Switch hmwSoundSwitch = content.findViewById(R.id.switch_hmw_sound);
+        Switch lvsaSoundSwitch = content.findViewById(R.id.switch_lvsa_sound);
 
         rbSedan.setChecked(true);
         if (calibration != null) {
@@ -1253,6 +1282,9 @@ public final class MainActivity extends Activity {
                 : frame == null ? "待连接"
                 : AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
                         frame.frameWidth(), frame.frameHeight()) ? "已校准" : "需校准");
+        bindAlertSwitch(fcwSoundSwitch, AdasDecisionEngine.Alert.FCW);
+        bindAlertSwitch(hmwSoundSwitch, AdasDecisionEngine.Alert.HMW_CRITICAL);
+        bindAlertSwitch(lvsaSoundSwitch, AdasDecisionEngine.Alert.LVSA);
         AlertDialog dialog = new AlertDialog.Builder(this, R.style.Theme_HctAdas_SettingsDialog)
                 .setView(content)
                 .create();
@@ -1289,22 +1321,33 @@ public final class MainActivity extends Activity {
             dialog.dismiss();
             showCalibrationOverlay();
         });
-        // Configure the dialog window before show(). Setting the width in onShow() lets the first
-        // frame use the platform default and then re-centers, which is the visible "moving" effect.
+        // Theme.AlertDialog reapplies its content/layout parameters during show(), so dimensions
+        // must be applied both before show (initial window attributes) and after show (final size).
         Window window = dialog.getWindow();
+        int dialogWidth = 0;
+        int dialogHeight = 0;
         if (window != null) {
             window.setBackgroundDrawable(new ColorDrawable(0x00000000));
             window.setGravity(Gravity.CENTER);
             window.setWindowAnimations(0);
             window.setDimAmount(0.66f);
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
-            int maxWidth = (int) (420 * getResources().getDisplayMetrics().density);
+            float density = getResources().getDisplayMetrics().density;
+            int maxWidth = (int) (560 * density);
+            int maxHeight = (int) (500 * density);
+            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+            dialogWidth = Math.min(maxWidth, (int) (screenWidth * 0.96f));
+            dialogHeight = Math.min(maxHeight, (int) (screenHeight * 0.70f));
             WindowManager.LayoutParams attributes = window.getAttributes();
-            attributes.width = Math.min(maxWidth, (int) (screenWidth * 0.88f));
-            attributes.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            attributes.width = dialogWidth;
+            attributes.height = dialogHeight;
             window.setAttributes(attributes);
         }
         dialog.show();
+        Window shownWindow = dialog.getWindow();
+        if (shownWindow != null && dialogWidth > 0 && dialogHeight > 0) {
+            shownWindow.setLayout(dialogWidth, dialogHeight);
+        }
     }
 
     private void showCalibrationOverlay() {

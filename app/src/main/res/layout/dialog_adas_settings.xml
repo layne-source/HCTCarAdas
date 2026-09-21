@@ -1,52 +1,60 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/settings_dialog_surface"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:background="@android:color/transparent"
-    android:clipToPadding="false"
-    android:fillViewport="true"
-    android:overScrollMode="never"
-    android:scrollbars="none">
+    android:layout_height="match_parent"
+    android:background="@drawable/settings_surface"
+    android:orientation="vertical"
+    android:paddingStart="20dp"
+    android:paddingTop="18dp"
+    android:paddingEnd="20dp"
+    android:paddingBottom="16dp">
 
     <LinearLayout
-        android:id="@+id/settings_surface_content"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/settings_surface"
-        android:orientation="vertical"
-        android:paddingStart="20dp"
-        android:paddingTop="18dp"
-        android:paddingEnd="20dp"
-        android:paddingBottom="16dp">
+        android:gravity="center_vertical"
+        android:orientation="vertical">
 
-        <LinearLayout
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="vertical">
+            android:text="ADAS 设置"
+            android:textColor="@color/adas_text_primary"
+            android:textSize="19sp"
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="ADAS 设置"
-                android:textColor="@color/adas_text_primary"
-                android:textSize="19sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:text="车辆高度与镜头视场角会影响距离估计"
-                android:textColor="@color/adas_text_secondary"
-                android:textSize="12sp" />
-        </LinearLayout>
-
-        <View
+        <TextView
             android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:layout_marginTop="14dp"
-            android:background="@color/adas_divider" />
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:text="车辆高度与镜头视场角会影响距离估计"
+            android:textColor="@color/adas_text_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="14dp"
+        android:background="@color/adas_divider" />
+
+    <ScrollView
+        android:id="@+id/settings_content_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/settings_surface_content"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
         <TextView
             android:layout_width="match_parent"
@@ -181,6 +189,144 @@
                 android:textStyle="bold" />
         </RadioGroup>
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="声音提醒"
+            android:textColor="@color/adas_text_secondary"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/settings_toggle"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="8dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="前向碰撞警告"
+                    android:textColor="@color/adas_text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="1dp"
+                    android:text="碰撞风险很高时提醒"
+                    android:textColor="@color/adas_text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <Switch
+                android:id="@+id/switch_fcw_sound"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="前向碰撞警告声音"
+                android:minWidth="48dp"
+                android:padding="0dp"
+                android:showText="false" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/settings_toggle"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="8dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="车距过近提醒"
+                    android:textColor="@color/adas_text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="1dp"
+                    android:text="跟车距离过近时提醒"
+                    android:textColor="@color/adas_text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <Switch
+                android:id="@+id/switch_hmw_sound"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="车距过近提醒声音"
+                android:minWidth="48dp"
+                android:padding="0dp"
+                android:showText="false" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/settings_toggle"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="8dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="前车起步提醒"
+                    android:textColor="@color/adas_text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="1dp"
+                    android:text="等候时前车起步提醒"
+                    android:textColor="@color/adas_text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <Switch
+                android:id="@+id/switch_lvsa_sound"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="前车起步提醒声音"
+                android:minWidth="48dp"
+                android:padding="0dp"
+                android:showText="false" />
+        </LinearLayout>
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
@@ -232,5 +378,6 @@
                 android:textSize="12sp"
                 android:textStyle="bold" />
         </LinearLayout>
-    </LinearLayout>
-</ScrollView>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

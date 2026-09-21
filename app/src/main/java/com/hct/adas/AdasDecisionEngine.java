@@ -118,8 +118,7 @@ public final class AdasDecisionEngine {
         }
         // Level 2 Proximity Alert: HMW_CRITICAL when <= 4.0m (or the stricter THW rule).
         if (headwayCritical
-                && observation.timestampMillis() >= hmwCriticalCooldownUntil
-                && !events.contains(Alert.FCW)) {
+                && observation.timestampMillis() >= hmwCriticalCooldownUntil) {
             events.add(Alert.HMW_CRITICAL);
             hmwCriticalCooldownUntil = observation.timestampMillis() + HMW_CRITICAL_COOLDOWN_MILLIS;
         }

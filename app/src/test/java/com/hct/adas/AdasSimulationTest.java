@@ -20,7 +20,7 @@ public final class AdasSimulationTest {
         CameraCalibration calibration = CameraCalibration.fromWizard(WIDTH, HEIGHT, 1.45, 100.0, 3.7);
         AdasSimulator.Scenario[] scenarios = {AdasSimulator.Scenario.FCW_APPROACH,
                 AdasSimulator.Scenario.HMW_PROXIMITY, AdasSimulator.Scenario.LVSA_START};
-        double[] distances = {22.0, 7.0, 5.5};
+        double[] distances = {24.0, 7.0, 5.5};
         for (int i = 0; i < scenarios.length; i++) {
             AdasSimulator.SimFrame frame = AdasSimulator.generateScenario(
                     scenarios[i], WIDTH, HEIGHT, calibration).get(0);
@@ -53,6 +53,7 @@ public final class AdasSimulationTest {
         AdasDecisionEngine decisionEngine = new AdasDecisionEngine();
 
         boolean fcwTriggered = false;
+        boolean hmwCriticalTriggered = false;
 
         for (AdasSimulator.SimFrame simFrame : frames) {
             LeadVehicleTracker.Snapshot tracking = tracker.update(simFrame.detections());
@@ -77,9 +78,14 @@ public final class AdasSimulationTest {
             if (decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
                 fcwTriggered = true;
             }
+            if (decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
+                hmwCriticalTriggered = true;
+            }
         }
 
         assertTrue("FCW alert must be triggered during rapid approach scenario", fcwTriggered);
+        assertFalse("FCW simulation must not fall through to an HMW critical alert",
+                hmwCriticalTriggered);
     }
 
     @Test

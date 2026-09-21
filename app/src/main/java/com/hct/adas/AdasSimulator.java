@@ -11,6 +11,10 @@ import java.util.List;
  * Generates synthetic frame sequences and sensor feeds for SITL (Software-in-the-Loop) verification.
  */
 public final class AdasSimulator {
+    // Keep the FCW fixture outside HMW's critical distance/THW boundary at 60 km/h. The scenario
+    // must validate the FCW event and its switch independently; otherwise one run emits two alarms.
+    private static final double FCW_INITIAL_DISTANCE_METERS = 24.0;
+    private static final double FCW_FINAL_DISTANCE_METERS = 10.7;
     public enum Scenario {
         NONE("停止模拟"),
         FCW_APPROACH("FCW 前向碰撞测试 (前车急刹/高速逼近)"),
@@ -202,14 +206,20 @@ public final class AdasSimulator {
             float boxWidth;
             String desc;
             if (i < 6) {
-                bottomY = groundContactY(22.0, calibration);
+                bottomY = groundContactY(FCW_INITIAL_DISTANCE_METERS, calibration);
                 boxWidth = 0.08f;
-                desc = "60 km/h 巡航中 · 前车距离 22 米";
+                desc = String.format("60 km/h 巡航中 · 前车距离 %.0f 米",
+                        FCW_INITIAL_DISTANCE_METERS);
             } else {
-                float approachProgress = Math.min(1.0f, (float) (i - 5) / 15f);
-                bottomY = groundContactY(22.0 - approachProgress * 18.0, calibration);
+                // Complete the approach quickly enough for TTC to cross the FCW threshold, then
+                // hold at 10.7m so the high-speed HMW THW threshold is never crossed.
+                float approachProgress = Math.min(1.0f, (float) (i - 5) / 8f);
+                double distance = FCW_INITIAL_DISTANCE_METERS - approachProgress
+                        * (FCW_INITIAL_DISTANCE_METERS - FCW_FINAL_DISTANCE_METERS);
+                bottomY = groundContactY(distance, calibration);
                 boxWidth = 0.08f + approachProgress * 0.22f;
-                desc = String.format("前车急刹/快速逼近! TTC 持续下降 (第 %d 帧)", i - 5);
+                desc = String.format("前车急刹/快速逼近! 距离 %.1f 米 · TTC 持续下降 (第 %d 帧)",
+                        distance, i - 5);
             }
 
             float boxHeight = boxWidth * 0.85f;

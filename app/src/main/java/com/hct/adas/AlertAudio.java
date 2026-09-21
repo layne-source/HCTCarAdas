@@ -11,6 +11,7 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -36,6 +37,8 @@ public final class AlertAudio implements AutoCloseable {
     private final int lvsaSound;
     private final Set<Integer> loadedSounds = new HashSet<>();
     private final Set<Integer> pendingSounds = new HashSet<>();
+    private final Set<AdasDecisionEngine.Alert> disabledAlerts =
+            EnumSet.noneOf(AdasDecisionEngine.Alert.class);
     private final ArrayDeque<Integer> playingStreams = new ArrayDeque<>();
     private final long loadStartedMillis = SystemClock.elapsedRealtime();
     private ToneGenerator toneGenerator;
@@ -43,6 +46,7 @@ public final class AlertAudio implements AutoCloseable {
     private boolean closed;
     private int activePriority = 0;
     private long priorityLockUntilNanos = 0L;
+    private AdasDecisionEngine.Alert activeAlert;
 
     public AlertAudio(Context context) throws IOException {
         audioManager = context.getSystemService(AudioManager.class);
@@ -150,11 +154,37 @@ public final class AlertAudio implements AutoCloseable {
     }
 
     /**
-     * Plays the speaker test tone. It claims the lowest priority for a short window so that a real
-     * FCW or HMW_CRITICAL event can still preempt it instead of being suppressed by the test sound.
+     * Plays the independent speaker test tone. It intentionally bypasses the alert switches and
+     * claims the lowest priority for a short window so a real FCW/HMW event can preempt it.
      */
     public synchronized boolean testSound() {
-        return playPrioritized(1, hmwSound, ToneGenerator.TONE_PROP_ACK, HMW_PLAYBACK_MILLIS);
+        boolean played = playPrioritized(1, hmwSound, ToneGenerator.TONE_PROP_ACK,
+                HMW_PLAYBACK_MILLIS);
+        if (played) {
+            // The hardware test is not an alert event; do not let a stale alert identity make a
+            // later sound-switch change stop this independent test stream.
+            activeAlert = null;
+        }
+        return played;
+    }
+
+    /** Applies a sound switch immediately, including stopping an alert that is currently playing. */
+    public synchronized void setAlertEnabled(AdasDecisionEngine.Alert alert, boolean enabled) {
+        if (alert == null || alert == AdasDecisionEngine.Alert.LDW) {
+            return;
+        }
+        if (enabled) {
+            disabledAlerts.remove(alert);
+            return;
+        }
+        disabledAlerts.add(alert);
+        if (activeAlert == alert) {
+            stopPlayingStreams();
+            stopTone();
+            activePriority = 0;
+            priorityLockUntilNanos = 0L;
+            activeAlert = null;
+        }
     }
 
     public synchronized boolean play(Set<AdasDecisionEngine.Alert> alerts) {
@@ -167,13 +197,15 @@ public final class AlertAudio implements AutoCloseable {
         int fallbackTone = ToneGenerator.TONE_PROP_ACK;
         int durationMillis = LVSA_PLAYBACK_MILLIS;
 
-        if (alerts.contains(AdasDecisionEngine.Alert.FCW)) {
+        if (alerts.contains(AdasDecisionEngine.Alert.FCW)
+                && !disabledAlerts.contains(AdasDecisionEngine.Alert.FCW)) {
             selectedAlert = AdasDecisionEngine.Alert.FCW;
             priority = 4;
             sound = fcwSound;
             fallbackTone = ToneGenerator.TONE_PROP_BEEP2;
             durationMillis = FCW_PLAYBACK_MILLIS;
-        } else if (alerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
+        } else if (alerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)
+                && !disabledAlerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
             selectedAlert = AdasDecisionEngine.Alert.HMW_CRITICAL;
             priority = 3;
             sound = hmwSound;
@@ -185,9 +217,21 @@ public final class AlertAudio implements AutoCloseable {
             sound = ldwSound;
             fallbackTone = ToneGenerator.TONE_SUP_PIP;
             durationMillis = LDW_PLAYBACK_MILLIS;
+        } else if (alerts.contains(AdasDecisionEngine.Alert.LVSA)
+                && !disabledAlerts.contains(AdasDecisionEngine.Alert.LVSA)) {
+            selectedAlert = AdasDecisionEngine.Alert.LVSA;
+            priority = 1;
+            sound = lvsaSound;
+            fallbackTone = ToneGenerator.TONE_PROP_ACK;
+            durationMillis = LVSA_PLAYBACK_MILLIS;
+        } else {
+            return true;
         }
 
         boolean played = playPrioritized(priority, sound, fallbackTone, durationMillis);
+        if (played) {
+            activeAlert = selectedAlert;
+        }
         Log.i(TAG, "alert=" + selectedAlert + " requested=" + alerts + " priority=" + priority
                 + " soundId=" + sound + " durationMs=" + durationMillis + " played=" + played);
         return played;
@@ -206,6 +250,7 @@ public final class AlertAudio implements AutoCloseable {
             // continue underneath FCW/HMW_CRITICAL.
             stopPlayingStreams();
             stopTone();
+            activeAlert = null;
         }
 
         boolean played = playSound(sound, fallbackTone, durationMillis);
@@ -260,6 +305,7 @@ public final class AlertAudio implements AutoCloseable {
         stopTone();
         activePriority = 0;
         priorityLockUntilNanos = 0L;
+        activeAlert = null;
     }
 
     private void stopPlayingStreams() {
