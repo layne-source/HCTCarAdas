@@ -24,6 +24,12 @@ public final class VehicleOverlayStyleTest {
     }
 
     @Test
+    public void warningMarkerUsesCompactBounds() {
+        assertEquals(30f, VehicleOverlayView.warningMarkerWidth(100f, 1f), 0.001f);
+        assertEquals(96f, VehicleOverlayView.warningMarkerWidth(1000f, 3f), 0.001f);
+    }
+
+    @Test
     public void ongoingHeadwayCautionShowsYellowWithoutAnAudioEvent() {
         AdasDecisionEngine.Decision decision =
                 new AdasDecisionEngine.Decision(Set.of(), true, false, false, false);
