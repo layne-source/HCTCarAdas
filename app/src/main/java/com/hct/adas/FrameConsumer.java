@@ -33,6 +33,7 @@ public final class FrameConsumer implements AutoCloseable {
     private long failedFrames;
     private String lastError = "";
     private boolean desiredRunning;
+    private int workerRestartStreak;
     private Session session;
 
     private static final class Session {
@@ -46,6 +47,11 @@ public final class FrameConsumer implements AutoCloseable {
     }
 
     public synchronized void start() {
+        if (!desiredRunning) {
+            // A caller-initiated stop/start cycle is not a failure streak. Automatic worker
+            // restarts keep their streak until a frame is processed successfully.
+            workerRestartStreak = 0;
+        }
         desiredRunning = true;
         if (session == null) {
             launchWorker();
@@ -86,6 +92,7 @@ public final class FrameConsumer implements AutoCloseable {
                         finishedNanos = finished;
                         processedFrames++;
                         lastError = "";
+                        workerRestartStreak = 0;
                     }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
@@ -105,14 +112,41 @@ public final class FrameConsumer implements AutoCloseable {
             } catch (RuntimeException | LinkageError failure) {
                 recordFailure(failure);
             }
+            boolean shouldRestart;
+            long restartDelayMillis;
             synchronized (this) {
-                session = null;
-                // Restart only after the previous worker releases its interpreter.
-                if (desiredRunning) {
+                shouldRestart = desiredRunning;
+                restartDelayMillis = shouldRestart
+                        ? restartBackoffMillis(++workerRestartStreak) : 0L;
+            }
+            if (shouldRestart && restartDelayMillis > 0L) {
+                try {
+                    Thread.sleep(restartDelayMillis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            synchronized (this) {
+                // Keep the session registered during the delay so close() can interrupt it and a
+                // concurrent start() cannot create a second worker.
+                if (session == current) {
+                    session = null;
+                }
+                // Restart only after the previous worker releases its interpreter and the bounded
+                // delay has elapsed.
+                if (desiredRunning && session == null) {
                     launchWorker();
                 }
             }
         }
+    }
+
+    /** Bounded delay used after a worker exits because of repeated handler failures. */
+    static long restartBackoffMillis(int restartStreak) {
+        if (restartStreak <= 0) {
+            return 0L;
+        }
+        return 250L << Math.min(3, restartStreak - 1);
     }
 
     private synchronized void recordFailure(Throwable failure) {

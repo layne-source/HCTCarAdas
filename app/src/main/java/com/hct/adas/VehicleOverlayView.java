@@ -15,7 +15,6 @@ import android.util.Log;
 import android.view.View;
 
 import java.util.Locale;
-import java.util.ArrayList;
 import java.util.List;
 
 /** Displays source-normalized detections in the same cropped viewport as the preview. */
@@ -27,6 +26,10 @@ public final class VehicleOverlayView extends View {
     private final Paint laneFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint laneLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint targetLabelBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint warningMarkerFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint warningMarkerStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint warningMarkerIconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path warningMarkerPath = new Path();
     private VehicleDetector.Result result;
     private LeadVehicleTracker.Snapshot tracking;
     private CameraCalibration calibration;
@@ -40,6 +43,11 @@ public final class VehicleOverlayView extends View {
     private static final int GUIDE_GREEN = 0xFF36D99C;
     private static final int GUIDE_YELLOW = 0xFFF2BA49;
     private static final int GUIDE_RED = 0xFFFF525E;
+    private static final int SECONDARY_VEHICLE_COLOR = 0xFFB0BEC5;
+    private static final float TARGET_BOX_STROKE_DP = 4f;
+    private static final float SECONDARY_BOX_STROKE_DP = 2.5f;
+    private static final float CORNER_LENGTH_RATIO = 0.24f;
+    private static final float CORNER_LENGTH_MAX_DP = 32f;
     private static final long COLOR_FADE_NANOS = 250_000_000L;
     private static final long ARROW_CYCLE_NANOS = 1_800_000_000L;
     private final FixedGuideController guideController = new FixedGuideController();
@@ -53,7 +61,6 @@ public final class VehicleOverlayView extends View {
     private int viewportViewWidth;
     private int viewportViewHeight;
     private String targetLabel = "";
-    private List<String> debugLabels = List.of();
     private float targetLabelBaseline;
     private boolean guideSettingsOpen;
     private boolean animationScheduled;
@@ -114,6 +121,13 @@ public final class VehicleOverlayView extends View {
         laneFillPaint.setStyle(Paint.Style.FILL);
         laneLinePaint.setStyle(Paint.Style.STROKE);
         laneLinePaint.setStrokeWidth(3f * density);
+        warningMarkerFillPaint.setStyle(Paint.Style.FILL);
+        warningMarkerStrokePaint.setStyle(Paint.Style.STROKE);
+        warningMarkerStrokePaint.setStrokeCap(Paint.Cap.ROUND);
+        warningMarkerStrokePaint.setStrokeJoin(Paint.Join.ROUND);
+        warningMarkerIconPaint.setStyle(Paint.Style.STROKE);
+        warningMarkerIconPaint.setStrokeCap(Paint.Cap.ROUND);
+        warningMarkerIconPaint.setStrokeJoin(Paint.Join.ROUND);
     }
 
     public void setResult(VehicleDetector.Result result, LeadVehicleTracker.Snapshot tracking) {
@@ -164,7 +178,6 @@ public final class VehicleOverlayView extends View {
         this.speedAvailable = speedAvailable;
         this.motion = motion;
         targetLabel = makeTargetLabel();
-        debugLabels = makeDebugLabels();
         if (result == null) {
             lastLaneSeenNanos = 0L;
             setGuideInput(null);
@@ -359,49 +372,12 @@ public final class VehicleOverlayView extends View {
         if (AdasCalibrationMode.LDW_ENABLED && !sizeMismatch) {
             drawLane(canvas, left, top, width, height);
         }
+        // Production must show every detector result, not only the tracked lead vehicle. The
+        // tracker still owns distance/alert semantics; secondary boxes are visual-only.
+        drawVehicleBoxes(canvas, left, top, width, height);
+        drawWarningMarker(canvas);
         drawTargetReadout(canvas, left, top, width, height);
-        // Keep unselected boxes for debug verification; production shows only the tracked target
-        // together with its distance label so the overlay follows the real vehicle position.
-        if (!BuildConfig.DEBUG) {
-            drawTargetBox(canvas, left, top, width, height);
-            logLaneDrawing(false);
-            return;
-        }
-        for (int index = 0; index < result.vehicles().size(); index++) {
-            VehicleDetector.Detection detection = result.vehicles().get(index);
-            boolean selected = tracking != null && detection.equals(tracking.detection());
-            int color = selected ? selectedColor() : 0xFFB0BEC5;
-            boxPaint.setColor(color);
-            textPaint.setColor(color);
-            float x = left + detection.left() * width;
-            float y = top + detection.top() * height;
-            canvas.drawRect(x, y, left + detection.right() * width,
-                    top + detection.bottom() * height, boxPaint);
-            canvas.drawText(debugLabels.get(index), x,
-                    Math.max(textPaint.getTextSize(), y - 4f), textPaint);
-        }
-        logLaneDrawing(hoodLineVisible());
-    }
-
-    private List<String> makeDebugLabels() {
-        if (!BuildConfig.DEBUG || result == null) {
-            return List.of();
-        }
-        List<String> labels = new ArrayList<>(result.vehicles().size());
-        for (VehicleDetector.Detection detection : result.vehicles()) {
-            String label = switch (detection.label()) {
-                case "car" -> "轿车";
-                case "bus" -> "客车";
-                default -> "货车";
-            };
-            if (tracking != null && detection.equals(tracking.detection())) {
-                label = (tracking.state() == LeadVehicleTracker.State.TRACKING
-                        ? getResources().getString(R.string.tracking_box_label, tracking.trackId())
-                        : getResources().getString(R.string.tracking_candidate)) + " · " + label;
-            }
-            labels.add(String.format(Locale.ROOT, "%s %.0f%%", label, detection.confidence() * 100f));
-        }
-        return labels;
+        logLaneDrawing(BuildConfig.DEBUG && hoodLineVisible());
     }
 
     private boolean currentTargetValid() {
@@ -416,17 +392,7 @@ public final class VehicleOverlayView extends View {
         if (!currentTargetValid()) {
             return "";
         }
-        String label = String.format(Locale.ROOT, "%.1f m", motion.distanceMeters());
-        if (decision != null && decision.events().contains(AdasDecisionEngine.Alert.FCW)) {
-            label += " · FCW";
-        } else if (decision != null
-                && decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
-            label += " · HMW";
-        } else if (decision != null
-                && decision.events().contains(AdasDecisionEngine.Alert.LVSA)) {
-            label += " · LVSA";
-        }
-        return label;
+        return String.format(Locale.ROOT, "前车 %.1f m", motion.distanceMeters());
     }
 
     private void prepareTargetReadout(float left, float top, float width, float height) {
@@ -445,8 +411,11 @@ public final class VehicleOverlayView extends View {
         float paddingX = 8f * density;
         float paddingY = 5f * density;
         float labelWidth = textPaint.measureText(targetLabel) + paddingX * 2f;
-        float labelLeft = Math.max(left, Math.min(x, left + width - labelWidth));
-        targetLabelBaseline = Math.max(top + textSize + paddingY, y - 7f * density);
+        float labelLeft = Math.max(4f * density,
+                Math.min(18f * density, getWidth() - labelWidth - 4f * density));
+        float bottomSafeGap = Math.max(48f * density, 26f * getResources().getDisplayMetrics().scaledDensity);
+        targetLabelBaseline = Math.max(top + textSize + paddingY,
+                getHeight() - bottomSafeGap);
         targetLabelBounds.set(labelLeft, targetLabelBaseline - textSize - paddingY,
                 labelLeft + labelWidth, targetLabelBaseline + paddingY * 0.5f);
     }
@@ -465,13 +434,145 @@ public final class VehicleOverlayView extends View {
                 targetLabelBaseline, textPaint);
     }
 
-    private void drawTargetBox(Canvas canvas, float left, float top, float width, float height) {
+    private void drawWarningMarker(Canvas canvas) {
         if (targetBounds.isEmpty()) {
             return;
         }
-        boxPaint.setColor(selectedColor());
-        boxPaint.setStrokeWidth(2.5f * getResources().getDisplayMetrics().density);
-        canvas.drawRect(targetBounds, boxPaint);
+        int warningColor = warningColorForDecision(decision, true);
+        if (warningColor == 0) {
+            return;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        float markerWidth = Math.min(72f * density, targetBounds.width() * 0.42f);
+        if (markerWidth < 22f * density) {
+            return;
+        }
+        float markerHeight = markerWidth * 0.78f;
+        float centerX = targetBounds.centerX();
+        float baseY = targetBounds.top + targetBounds.height() * 0.80f;
+        float topY = baseY - markerHeight;
+        if (baseY > getHeight() - 8f * density) {
+            baseY = getHeight() - 8f * density;
+            topY = baseY - markerHeight;
+        }
+        warningMarkerPath.reset();
+        warningMarkerPath.moveTo(centerX, topY);
+        warningMarkerPath.lineTo(centerX - markerWidth * 0.5f, baseY);
+        warningMarkerPath.lineTo(centerX + markerWidth * 0.5f, baseY);
+        warningMarkerPath.close();
+
+        warningMarkerFillPaint.setColor(warningColor);
+        canvas.drawPath(warningMarkerPath, warningMarkerFillPaint);
+        warningMarkerStrokePaint.setColor(0xDD101820);
+        warningMarkerStrokePaint.setStrokeWidth(2.5f * density);
+        canvas.drawPath(warningMarkerPath, warningMarkerStrokePaint);
+
+        float iconWidth = markerWidth * 0.42f;
+        float iconBodyHeight = markerHeight * 0.22f;
+        float iconLeft = centerX - iconWidth * 0.5f;
+        float iconRight = centerX + iconWidth * 0.5f;
+        float iconBottom = baseY - markerHeight * 0.25f;
+        float iconTop = iconBottom - iconBodyHeight;
+        warningMarkerIconPaint.setColor(Color.WHITE);
+        warningMarkerIconPaint.setStrokeWidth(Math.max(1.5f * density, markerWidth * 0.035f));
+        canvas.drawRoundRect(new RectF(iconLeft, iconTop, iconRight, iconBottom),
+                iconBodyHeight * 0.25f, iconBodyHeight * 0.25f, warningMarkerIconPaint);
+        warningMarkerPath.reset();
+        warningMarkerPath.moveTo(iconLeft + iconWidth * 0.16f, iconTop);
+        warningMarkerPath.lineTo(centerX - iconWidth * 0.20f, iconTop - iconBodyHeight * 0.55f);
+        warningMarkerPath.lineTo(centerX + iconWidth * 0.20f, iconTop - iconBodyHeight * 0.55f);
+        warningMarkerPath.lineTo(iconRight - iconWidth * 0.16f, iconTop);
+        canvas.drawPath(warningMarkerPath, warningMarkerIconPaint);
+    }
+
+    static int warningColorForDecision(AdasDecisionEngine.Decision decision,
+                                       boolean targetValid) {
+        if (!targetValid || decision == null) {
+            return 0;
+        }
+        if (decision.collisionDanger() || decision.headwayCritical()
+                || decision.events().contains(AdasDecisionEngine.Alert.FCW)
+                || decision.events().contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
+            return GUIDE_RED;
+        }
+        if (decision.headwayWarning()) {
+            return GUIDE_YELLOW;
+        }
+        return 0;
+    }
+
+    private void drawVehicleBoxes(Canvas canvas, float left, float top, float width, float height) {
+        if (result == null || result.vehicles().isEmpty()) {
+            return;
+        }
+        // Draw secondary detections first so the selected lead vehicle remains visually dominant
+        // when boxes touch or overlap.
+        for (int index = 0; index < result.vehicles().size(); index++) {
+            VehicleDetector.Detection detection = result.vehicles().get(index);
+            if (!isTrackedDetection(detection)) {
+                drawVehicleBox(canvas, left, top, width, height, detection, false);
+            }
+        }
+        for (int index = 0; index < result.vehicles().size(); index++) {
+            VehicleDetector.Detection detection = result.vehicles().get(index);
+            if (isTrackedDetection(detection)) {
+                drawVehicleBox(canvas, left, top, width, height, detection, true);
+            }
+        }
+    }
+
+    private boolean isTrackedDetection(VehicleDetector.Detection detection) {
+        return tracking != null && detection != null && detection.equals(tracking.detection());
+    }
+
+    private void drawVehicleBox(Canvas canvas, float left, float top, float width, float height,
+                                VehicleDetector.Detection detection, boolean tracked) {
+        RectF bounds = new RectF(left + detection.left() * width,
+                top + detection.top() * height,
+                left + detection.right() * width,
+                top + detection.bottom() * height);
+        int color = tracked ? selectedColor() : SECONDARY_VEHICLE_COLOR;
+        drawCornerBox(canvas, bounds, color, tracked);
+    }
+
+    private void drawCornerBox(Canvas canvas, RectF bounds, int color, boolean tracked) {
+        float density = getResources().getDisplayMetrics().density;
+        float corner = cornerLengthForBounds(bounds.width(), bounds.height(), density);
+        if (!(corner > 0f)) {
+            return;
+        }
+        boxPaint.setStyle(Paint.Style.STROKE);
+        boxPaint.setColor(color);
+        boxPaint.setStrokeWidth(boxStrokeWidth(tracked, density));
+        boxPaint.setStrokeCap(Paint.Cap.SQUARE);
+        boxPaint.setStrokeJoin(Paint.Join.MITER);
+
+        float left = bounds.left;
+        float top = bounds.top;
+        float right = bounds.right;
+        float bottom = bounds.bottom;
+        canvas.drawLine(left, top, left + corner, top, boxPaint);
+        canvas.drawLine(left, top, left, top + corner, boxPaint);
+        canvas.drawLine(right - corner, top, right, top, boxPaint);
+        canvas.drawLine(right, top, right, top + corner, boxPaint);
+        canvas.drawLine(left, bottom - corner, left, bottom, boxPaint);
+        canvas.drawLine(left, bottom, left + corner, bottom, boxPaint);
+        canvas.drawLine(right - corner, bottom, right, bottom, boxPaint);
+        canvas.drawLine(right, bottom - corner, right, bottom, boxPaint);
+    }
+
+    static float cornerLengthForBounds(float boxWidth, float boxHeight, float density) {
+        if (!(boxWidth > 0f) || !(boxHeight > 0f)) {
+            return 0f;
+        }
+        float safeDensity = Float.isFinite(density) && density > 0f ? density : 1f;
+        return Math.min(Math.min(boxWidth, boxHeight) * CORNER_LENGTH_RATIO,
+                CORNER_LENGTH_MAX_DP * safeDensity);
+    }
+
+    static float boxStrokeWidth(boolean tracked, float density) {
+        float safeDensity = Float.isFinite(density) && density > 0f ? density : 1f;
+        return (tracked ? TARGET_BOX_STROKE_DP : SECONDARY_BOX_STROKE_DP) * safeDensity;
     }
 
     /** True when the calibration reference lines are being drawn this frame. */

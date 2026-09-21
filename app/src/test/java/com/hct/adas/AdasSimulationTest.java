@@ -30,6 +30,19 @@ public final class AdasSimulationTest {
     }
 
     @Test
+    public void frontVehicleScenariosDoNotInjectLaneWhenProfileDisablesIt() {
+        for (AdasSimulator.Scenario scenario : new AdasSimulator.Scenario[] {
+                AdasSimulator.Scenario.FCW_APPROACH,
+                AdasSimulator.Scenario.HMW_PROXIMITY,
+                AdasSimulator.Scenario.LVSA_START}) {
+            AdasSimulator.SimFrame frame = AdasSimulator.generateScenario(
+                    scenario, WIDTH, HEIGHT, CALIBRATION).get(0);
+            assertFalse("V1 front-vehicle scenarios must use production lane input",
+                    frame.lane().available());
+        }
+    }
+
+    @Test
     public void fcwApproachScenarioTriggersFcwAlarm() {
         List<AdasSimulator.SimFrame> frames = AdasSimulator.generateScenario(
                 AdasSimulator.Scenario.FCW_APPROACH, WIDTH, HEIGHT, CALIBRATION);

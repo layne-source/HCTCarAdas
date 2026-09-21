@@ -51,4 +51,11 @@ public final class AdasCalibrationModeTest {
     public void lightweightProductDoesNotEnableLaneDepartureBranch() {
         assertFalse(AdasCalibrationMode.LDW_ENABLED);
     }
+
+    @Test
+    public void disabledLaneProfileExposesUnavailableObservationToProductionPipeline() {
+        LaneDepartureDetector.Observation synthetic = new LaneDepartureDetector.Observation(
+                0.0, 0.9, true, 0.44, 0.56, 0.35, 0.65);
+        assertFalse(AdasCalibrationMode.effectiveLaneObservation(synthetic).available());
+    }
 }

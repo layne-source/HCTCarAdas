@@ -187,4 +187,14 @@ public final class FrameConsumerTest {
         assertEquals(1L, consumer.metrics().failedFrames());
         assertTrue(consumer.metrics().lastError().contains("model contract mismatch"));
     }
+
+    @Test
+    public void workerRestartBackoffIsBoundedAndGrows() {
+        assertEquals(0L, FrameConsumer.restartBackoffMillis(0));
+        assertEquals(250L, FrameConsumer.restartBackoffMillis(1));
+        assertEquals(500L, FrameConsumer.restartBackoffMillis(2));
+        assertEquals(1_000L, FrameConsumer.restartBackoffMillis(3));
+        assertEquals(2_000L, FrameConsumer.restartBackoffMillis(4));
+        assertEquals(2_000L, FrameConsumer.restartBackoffMillis(8));
+    }
 }

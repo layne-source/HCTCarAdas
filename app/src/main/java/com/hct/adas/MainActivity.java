@@ -304,9 +304,11 @@ public final class MainActivity extends Activity {
                             > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
                         resetAnalysisState();
                     }
-                    LaneDepartureDetector.Observation lane = AdasCalibrationMode.LDW_ENABLED
-                            ? laneDetector.detect(frame.nv21(), frame.width(), frame.height())
-                            : LaneDepartureDetector.Observation.UNAVAILABLE;
+                    LaneDepartureDetector.Observation lane =
+                            AdasCalibrationMode.effectiveLaneObservation(
+                                    AdasCalibrationMode.LDW_ENABLED
+                                            ? laneDetector.detect(frame.nv21(), frame.width(), frame.height())
+                                            : LaneDepartureDetector.Observation.UNAVAILABLE);
                     if (AdasCalibrationMode.LDW_ENABLED) {
                         logLaneSampling(lane);
                     }
@@ -1156,7 +1158,9 @@ public final class MainActivity extends Activity {
             @Override
             public void onFrame(AdasSimulator.SimFrame simFrame) {
                 setStatusText("【室内模拟】" + simFrame.description(), false);
-                processAdasFrame(simFrame.detections(), simFrame.lane(), simFrame.speedKmh(),
+                processAdasFrame(simFrame.detections(),
+                        AdasCalibrationMode.effectiveLaneObservation(simFrame.lane()),
+                        simFrame.speedKmh(),
                         learningPitchDegrees(simFrame.detections().frameWidth(),
                                 simFrame.detections().frameHeight()),
                         resultsGeneration, acceptFramesAfterNanos, true);

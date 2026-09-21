@@ -181,11 +181,19 @@ public final class AdasSimulator {
                 center - nearWidth / 2.0, center + nearWidth / 2.0, samples);
     }
 
+    private static LaneDepartureDetector.Observation simulationLane(
+            CameraCalibration calibration, int width, int height, double lateralOffset,
+            double confidence) {
+        return AdasCalibrationMode.LDW_ENABLED
+                ? syntheticLane(calibration, width, height, lateralOffset, confidence)
+                : LaneDepartureDetector.Observation.UNAVAILABLE;
+    }
+
     private static void generateFcwApproach(List<SimFrame> frames, int width, int height,
                                              CameraCalibration calibration) {
         int total = 25; // 5 seconds
         double speedKmh = 60.0;
-        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+        LaneDepartureDetector.Observation lane = simulationLane(calibration, width, height,
                 0.0, 0.85);
 
         for (int i = 0; i < total; i++) {
@@ -222,7 +230,7 @@ public final class AdasSimulator {
                                               CameraCalibration calibration) {
         int total = 25; // 5 seconds
         double speedKmh = 25.0; // Low city speed
-        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+        LaneDepartureDetector.Observation lane = simulationLane(calibration, width, height,
                 0.0, 0.85);
 
         for (int i = 0; i < total; i++) {
@@ -287,7 +295,7 @@ public final class AdasSimulator {
         int total = 35; // 7 seconds, including tracker confirmation before the stationary wait.
         int waitFrames = 20;
         double speedKmh = 0.0; // Stationary at traffic light
-        LaneDepartureDetector.Observation lane = syntheticLane(calibration, width, height,
+        LaneDepartureDetector.Observation lane = simulationLane(calibration, width, height,
                 0.0, 0.85);
 
         for (int i = 0; i < total; i++) {

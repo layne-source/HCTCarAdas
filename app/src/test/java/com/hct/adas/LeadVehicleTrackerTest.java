@@ -250,6 +250,33 @@ public final class LeadVehicleTrackerTest {
     }
 
     @Test
+    public void unavailableLanePrefersCentralVehicleOverNearerAdjacentVehicle() {
+        LeadVehicleTracker tracker = new LeadVehicleTracker();
+        VehicleDetector.Detection inLane = box(0.42f, 0.50f, 0.58f, 0.74f);
+        VehicleDetector.Detection adjacent = box(0.70f, 0.68f, 0.82f, 0.92f);
+
+        assertSame(inLane, tracker.update(frame(0, adjacent, inLane),
+                LaneDepartureDetector.Observation.UNAVAILABLE).detection());
+    }
+
+    @Test
+    public void unavailableLaneCanRecoverFromAdjacentTargetToCentralVehicle() {
+        LeadVehicleTracker tracker = new LeadVehicleTracker();
+        VehicleDetector.Detection adjacent = box(0.70f, 0.68f, 0.82f, 0.92f);
+        VehicleDetector.Detection inLane = box(0.42f, 0.50f, 0.58f, 0.74f);
+        LaneDepartureDetector.Observation unavailable = LaneDepartureDetector.Observation.UNAVAILABLE;
+
+        long oldId = confirm(tracker, 0, adjacent);
+        assertEquals(oldId, tracker.update(frame(600, adjacent, inLane), unavailable).trackId());
+        assertEquals(oldId, tracker.update(frame(800, adjacent, inLane), unavailable).trackId());
+
+        LeadVehicleTracker.Snapshot switched = tracker.update(frame(1000, adjacent, inLane), unavailable);
+        assertEquals(LeadVehicleTracker.State.TRACKING, switched.state());
+        assertSame(inLane, switched.detection());
+        assertNotEquals(oldId, switched.trackId());
+    }
+
+    @Test
     public void calibratedHorizonAllowsDistantLeadAcrossInstallationAnglesAndResolutions() {
         for (int width : new int[] {1280, 1920}) {
             int height = width * 9 / 16;

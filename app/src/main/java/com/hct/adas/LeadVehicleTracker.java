@@ -24,6 +24,10 @@ public final class LeadVehicleTracker {
     private static final float MIN_IOU = 0.30f;
     private static final float AMBIGUOUS_IOU_MARGIN = 0.08f;
     private static final float SWITCH_BOTTOM_MARGIN = 0.10f;
+    /** Without lane geometry, centrality is the only available ego-lane proxy. */
+    private static final float CENTER_BIAS = 0.85f;
+    private static final float CENTER_RECOVERY_CURRENT_OFFSET = 0.20f;
+    private static final float CENTER_RECOVERY_CANDIDATE_OFFSET = 0.14f;
 
     private VehicleDetector.Detection target;
     private long targetId;
@@ -159,13 +163,16 @@ public final class LeadVehicleTracker {
             }
             boolean laneRecovery = current != null && detection != current
                     && shouldRecoverToLane(current, detection, lane);
+            boolean centerRecovery = current != null && detection != current
+                    && shouldRecoverToCenter(current, detection, lane);
             if (current != null && (detection == current
-                    || (!laneRecovery && (detection.bottom() < current.bottom() + SWITCH_BOTTOM_MARGIN
+                    || (!(laneRecovery || centerRecovery)
+                    && (detection.bottom() < current.bottom() + SWITCH_BOTTOM_MARGIN
                     || iou(current, detection) >= 0.50f)))) {
                 continue;
             }
             // A lower ground-contact point is only a proximity heuristic, not metric distance.
-            float score = detection.bottom() - 0.30f * Math.abs(centerX(detection) - 0.5f);
+            float score = detection.bottom() - CENTER_BIAS * Math.abs(centerX(detection) - 0.5f);
             score += laneMembershipScore(detection, lane);
             if (score > bestScore || (score == bestScore && best != null
                     && detection.left() < best.left())) {
@@ -188,6 +195,21 @@ public final class LeadVehicleTracker {
         return lane != null && lane.available()
                 && laneMembershipScore(current, lane) < 0.0f
                 && laneMembershipScore(candidate, lane) >= 0.20f;
+    }
+
+    /**
+     * When lane geometry is unavailable, release a side-locked target once a persistent central
+     * candidate is present. This is a conservative fallback for the V1 profile, not a claim that
+     * image centrality can replace actual lane detection.
+     */
+    private static boolean shouldRecoverToCenter(VehicleDetector.Detection current,
+                                                  VehicleDetector.Detection candidate,
+                                                  LaneDepartureDetector.Observation lane) {
+        if (lane != null && lane.available()) {
+            return false;
+        }
+        return Math.abs(centerX(current) - 0.5f) >= CENTER_RECOVERY_CURRENT_OFFSET
+                && Math.abs(centerX(candidate) - 0.5f) <= CENTER_RECOVERY_CANDIDATE_OFFSET;
     }
 
     /** Returns a bounded bonus/penalty so proximity remains useful inside the same lane. */
