@@ -1254,8 +1254,8 @@ public final class MainActivity extends Activity {
                 : frame == null ? "待连接"
                 : AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
                         frame.frameWidth(), frame.frameHeight()) ? "已校准" : "需校准");
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setView(content)
+        AlertDialog dialog = new AlertDialog.Builder(this, R.style.Theme_HctAdas_SettingsDialog)
+                .setView(content, 0, 0, 0, 0)
                 .setNegativeButton("关闭", null)
                 .create();
         settingsDialog = dialog;
@@ -1290,20 +1290,26 @@ public final class MainActivity extends Activity {
             dialog.dismiss();
             showCalibrationOverlay();
         });
+        // Configure the dialog window before show(). Setting the width in onShow() lets the first
+        // frame use the platform default and then re-centers, which is the visible "moving" effect.
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(0x00000000));
+            window.setGravity(Gravity.CENTER);
+            window.setWindowAnimations(0);
+            window.setDimAmount(0.66f);
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            int maxWidth = (int) (380 * getResources().getDisplayMetrics().density);
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.width = Math.min(maxWidth, (int) (screenWidth * 0.88f));
+            attributes.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            window.setAttributes(attributes);
+        }
         dialog.setOnShowListener(ignored -> {
-            Window window = dialog.getWindow();
-            if (window != null) {
-                window.setBackgroundDrawable(new ColorDrawable(0x00000000));
-                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                window.setGravity(Gravity.CENTER);
-                window.setWindowAnimations(0);
-                int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                int maxWidth = (int) (380 * getResources().getDisplayMetrics().density);
-                window.setLayout(Math.min(maxWidth, (int) (screenWidth * 0.88f)),
-                        WindowManager.LayoutParams.WRAP_CONTENT);
-            }
             Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
             negative.setTextColor(0xFF9AA5B1);
+            negative.setAllCaps(false);
+            negative.setTextSize(14f);
         });
         dialog.show();
     }

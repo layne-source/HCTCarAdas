@@ -23,9 +23,11 @@ public final class AlertAudio implements AutoCloseable {
     // Cover the bundled WAV durations, not just the fallback tone. The small margin keeps a
     // low-priority request from overlapping the end of a higher-priority asset.
     private static final int FCW_PLAYBACK_MILLIS = 600;
-    private static final int HMW_PLAYBACK_MILLIS = 300;
+    // HMW intentionally shares the FCW asset; keep the same guard band for the 536 ms WAV.
+    private static final int HMW_PLAYBACK_MILLIS = 600;
     private static final int LDW_PLAYBACK_MILLIS = 550;
-    private static final int LVSA_PLAYBACK_MILLIS = 400;
+    // warning.wav is about 750 ms and is used for lead-departure alerts in Sunnypilot.
+    private static final int LVSA_PLAYBACK_MILLIS = 800;
     private final AudioManager audioManager;
     private final SoundPool soundPool;
     private final int fcwSound;

@@ -84,7 +84,7 @@
         android:layout_marginBottom="10dp"
         android:background="@android:color/transparent"
         android:clickable="true"
-        android:contentDescription="安装设置"
+        android:contentDescription="ADAS 设置"
         android:focusable="true"
         android:onClick="openCalibrationFromSettings"
         android:padding="10dp"

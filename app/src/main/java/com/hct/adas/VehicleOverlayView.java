@@ -54,6 +54,7 @@ public final class VehicleOverlayView extends View {
     private static final float WARNING_MARKER_ICON_WIDTH_RATIO = 0.34f;
     private static final float WARNING_MARKER_ICON_HEIGHT_RATIO = 0.30f;
     private static final float WARNING_MARKER_ICON_TOP_RATIO = 0.42f;
+    private static final float TARGET_LABEL_BOTTOM_GAP_DP = 84f;
     private static final long COLOR_FADE_NANOS = 250_000_000L;
     private static final long ARROW_CYCLE_NANOS = 1_800_000_000L;
     private final FixedGuideController guideController = new FixedGuideController();
@@ -422,9 +423,12 @@ public final class VehicleOverlayView extends View {
         float paddingX = 8f * density;
         float paddingY = 5f * density;
         float labelWidth = textPaint.measureText(targetLabel) + paddingX * 2f;
-        float labelLeft = Math.max(4f * density,
-                Math.min(18f * density, getWidth() - labelWidth - 4f * density));
-        float bottomSafeGap = Math.max(48f * density, 26f * getResources().getDisplayMetrics().scaledDensity);
+        float labelLeft = Math.max(8f * density,
+                Math.min(18f * density, getWidth() - labelWidth - 8f * density));
+        // Keep the distance card aligned with the lower-left speed readout while leaving a clear
+        // visual gap above it; anchoring it to 48 dp made the text look buried at the bottom.
+        float bottomSafeGap = Math.max(TARGET_LABEL_BOTTOM_GAP_DP * density,
+                26f * getResources().getDisplayMetrics().scaledDensity);
         targetLabelBaseline = Math.max(top + textSize + paddingY,
                 getHeight() - bottomSafeGap);
         targetLabelBounds.set(labelLeft, targetLabelBaseline - textSize - paddingY,

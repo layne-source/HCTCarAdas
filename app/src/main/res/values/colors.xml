@@ -1,0 +1,16 @@
+<resources>
+    <color name="adas_background">#FF0B1117</color>
+    <color name="adas_surface_top">#F0192733</color>
+    <color name="adas_surface_bottom">#F00C141C</color>
+    <color name="adas_surface_border">#546C8791</color>
+    <color name="adas_divider">#304A5C68</color>
+    <color name="adas_accent">#FF72D8C8</color>
+    <color name="adas_accent_bright">#FF8DEBDE</color>
+    <color name="adas_text_primary">#FFF4F7FA</color>
+    <color name="adas_text_secondary">#FF9FB0BC</color>
+    <color name="adas_option_background">#B61B2A35</color>
+    <color name="adas_option_selected">#E02B6670</color>
+    <color name="adas_option_pressed">#F03B7D85</color>
+    <color name="adas_option_border">#5572D8C8</color>
+    <color name="adas_option_text_checked">#FF071211</color>
+</resources>
