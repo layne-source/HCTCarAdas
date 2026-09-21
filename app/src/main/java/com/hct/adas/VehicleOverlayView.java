@@ -28,7 +28,6 @@ public final class VehicleOverlayView extends View {
     private final Paint laneLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint targetLabelBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint warningMarkerFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint warningMarkerStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path warningMarkerPath = new Path();
     private final Drawable vehicleMarkerDrawable;
     private VehicleDetector.Result result;
@@ -52,6 +51,9 @@ public final class VehicleOverlayView extends View {
     private static final float WARNING_MARKER_WIDTH_RATIO = 0.30f;
     private static final float WARNING_MARKER_MAX_DP = 32f;
     private static final float WARNING_MARKER_MIN_DP = 18f;
+    private static final float WARNING_MARKER_ICON_WIDTH_RATIO = 0.34f;
+    private static final float WARNING_MARKER_ICON_HEIGHT_RATIO = 0.30f;
+    private static final float WARNING_MARKER_ICON_TOP_RATIO = 0.42f;
     private static final long COLOR_FADE_NANOS = 250_000_000L;
     private static final long ARROW_CYCLE_NANOS = 1_800_000_000L;
     private final FixedGuideController guideController = new FixedGuideController();
@@ -126,9 +128,6 @@ public final class VehicleOverlayView extends View {
         laneLinePaint.setStyle(Paint.Style.STROKE);
         laneLinePaint.setStrokeWidth(3f * density);
         warningMarkerFillPaint.setStyle(Paint.Style.FILL);
-        warningMarkerStrokePaint.setStyle(Paint.Style.STROKE);
-        warningMarkerStrokePaint.setStrokeCap(Paint.Cap.ROUND);
-        warningMarkerStrokePaint.setStrokeJoin(Paint.Join.ROUND);
         vehicleMarkerDrawable = getResources().getDrawable(
                 R.drawable.ic_vehicle_marker, getContext().getTheme()).mutate();
     }
@@ -466,14 +465,11 @@ public final class VehicleOverlayView extends View {
 
         warningMarkerFillPaint.setColor(warningColor);
         canvas.drawPath(warningMarkerPath, warningMarkerFillPaint);
-        warningMarkerStrokePaint.setColor(0xDD101820);
-        warningMarkerStrokePaint.setStrokeWidth(2.5f * density);
-        canvas.drawPath(warningMarkerPath, warningMarkerStrokePaint);
 
-        float iconWidth = markerWidth * 0.50f;
-        float iconHeight = markerHeight * 0.40f;
+        float iconWidth = warningMarkerIconWidth(markerWidth);
+        float iconHeight = markerHeight * WARNING_MARKER_ICON_HEIGHT_RATIO;
         float iconLeft = centerX - iconWidth * 0.5f;
-        float iconTop = topY + markerHeight * 0.36f;
+        float iconTop = topY + markerHeight * WARNING_MARKER_ICON_TOP_RATIO;
         vehicleMarkerDrawable.setBounds(Math.round(iconLeft), Math.round(iconTop),
                 Math.round(iconLeft + iconWidth), Math.round(iconTop + iconHeight));
         vehicleMarkerDrawable.draw(canvas);
@@ -486,6 +482,13 @@ public final class VehicleOverlayView extends View {
         }
         return Math.min(WARNING_MARKER_MAX_DP * density,
                 targetWidth * WARNING_MARKER_WIDTH_RATIO);
+    }
+
+    static float warningMarkerIconWidth(float markerWidth) {
+        if (!Float.isFinite(markerWidth) || markerWidth <= 0f) {
+            return 0f;
+        }
+        return markerWidth * WARNING_MARKER_ICON_WIDTH_RATIO;
     }
 
     static int warningColorForDecision(AdasDecisionEngine.Decision decision,

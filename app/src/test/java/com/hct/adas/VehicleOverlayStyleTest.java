@@ -30,6 +30,11 @@ public final class VehicleOverlayStyleTest {
     }
 
     @Test
+    public void warningMarkerIconKeepsAnInsetInsideTriangle() {
+        assertEquals(34f, VehicleOverlayView.warningMarkerIconWidth(100f), 0.001f);
+    }
+
+    @Test
     public void ongoingHeadwayCautionShowsYellowWithoutAnAudioEvent() {
         AdasDecisionEngine.Decision decision =
                 new AdasDecisionEngine.Decision(Set.of(), true, false, false, false);
