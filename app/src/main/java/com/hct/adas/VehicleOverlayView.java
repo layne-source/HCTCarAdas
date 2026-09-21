@@ -351,14 +351,17 @@ public final class VehicleOverlayView extends View {
         if (!guideGeometryReady) {
             guideMode = FixedGuideController.Mode.HIDDEN;
         }
-        boolean moving = guideMode == FixedGuideController.Mode.NORMAL && !guideSettingsOpen;
+        // MONITORING means the active driving guide has no valid lead target yet. Render it as the
+        // same green, flowing corridor as NORMAL; only an actual warning or danger changes the guide.
+        FixedGuideController.Mode renderMode = renderModeFor(guideMode);
+        boolean moving = renderMode == FixedGuideController.Mode.NORMAL && !guideSettingsOpen;
         if (moving && !arrowsMoving) {
             arrowStartNanos = now;
         }
         arrowsMoving = moving;
         float phase = moving ? (float) ((now - arrowStartNanos) % ARROW_CYCLE_NANOS)
                 / ARROW_CYCLE_NANOS : 0f;
-        guideRenderer.draw(canvas, guideMode,
+        guideRenderer.draw(canvas, renderMode,
                 guideMode == FixedGuideController.Mode.MONITORING ? GUIDE_GREEN : displayColor,
                 phase, targetBounds, targetLabelBounds);
         if ((moving || colorFading) && isAttachedToWindow() && isShown()
@@ -380,6 +383,12 @@ public final class VehicleOverlayView extends View {
         drawWarningMarker(canvas);
         drawTargetReadout(canvas, left, top, width, height);
         logLaneDrawing(BuildConfig.DEBUG && hoodLineVisible());
+    }
+
+    /** The active guide remains green and animated while no valid lead target is available. */
+    static FixedGuideController.Mode renderModeFor(FixedGuideController.Mode mode) {
+        return mode == FixedGuideController.Mode.MONITORING
+                ? FixedGuideController.Mode.NORMAL : mode;
     }
 
     private boolean currentTargetValid() {

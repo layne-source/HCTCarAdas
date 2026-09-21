@@ -64,9 +64,11 @@ public final class FixedGuideController {
             return Mode.HIDDEN;
         }
         return switch (input.trackingState()) {
-            case NONE, CANDIDATE -> Mode.MONITORING;
-            case LOST -> Mode.HIDDEN;
-            case TRACKING -> !input.targetValid() ? Mode.HIDDEN
+            // The reference band describes the driving corridor, so an absent or temporarily
+            // invalid lead target does not make the healthy speed/calibration guide disappear.
+            // Risk colours are only accepted for a currently valid tracked target.
+            case NONE, CANDIDATE, LOST -> Mode.MONITORING;
+            case TRACKING -> !input.targetValid() ? Mode.MONITORING
                     : input.danger() ? Mode.DANGER
                     : input.warning() ? Mode.WARNING : Mode.NORMAL;
         };

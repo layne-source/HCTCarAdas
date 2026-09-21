@@ -20,8 +20,8 @@ public final class AlertAudio implements AutoCloseable {
 
     private static final String TAG = "HctAdasAudio";
     private static final long LOAD_TIMEOUT_MILLIS = 5_000L;
-    // Cover the bundled WAV durations (FCW 560, HMW 300, LDW 550, LVSA 400 ms),
-    // not just the fallback tone. A shorter lock lets a low-priority request overlap the tail.
+    // Cover the bundled WAV durations, not just the fallback tone. The small margin keeps a
+    // low-priority request from overlapping the end of a higher-priority asset.
     private static final int FCW_PLAYBACK_MILLIS = 600;
     private static final int HMW_PLAYBACK_MILLIS = 300;
     private static final int LDW_PLAYBACK_MILLIS = 550;
@@ -159,29 +159,36 @@ public final class AlertAudio implements AutoCloseable {
         if (alerts == null || alerts.isEmpty()) {
             return true;
         }
+        AdasDecisionEngine.Alert selectedAlert = AdasDecisionEngine.Alert.LVSA;
         int priority = 1;
         int sound = lvsaSound;
         int fallbackTone = ToneGenerator.TONE_PROP_ACK;
         int durationMillis = LVSA_PLAYBACK_MILLIS;
 
         if (alerts.contains(AdasDecisionEngine.Alert.FCW)) {
+            selectedAlert = AdasDecisionEngine.Alert.FCW;
             priority = 4;
             sound = fcwSound;
             fallbackTone = ToneGenerator.TONE_PROP_BEEP2;
             durationMillis = FCW_PLAYBACK_MILLIS;
         } else if (alerts.contains(AdasDecisionEngine.Alert.HMW_CRITICAL)) {
+            selectedAlert = AdasDecisionEngine.Alert.HMW_CRITICAL;
             priority = 3;
             sound = hmwSound;
             fallbackTone = ToneGenerator.TONE_PROP_BEEP;
             durationMillis = HMW_PLAYBACK_MILLIS;
         } else if (alerts.contains(AdasDecisionEngine.Alert.LDW)) {
+            selectedAlert = AdasDecisionEngine.Alert.LDW;
             priority = 2;
             sound = ldwSound;
             fallbackTone = ToneGenerator.TONE_SUP_PIP;
             durationMillis = LDW_PLAYBACK_MILLIS;
         }
 
-        return playPrioritized(priority, sound, fallbackTone, durationMillis);
+        boolean played = playPrioritized(priority, sound, fallbackTone, durationMillis);
+        Log.i(TAG, "alert=" + selectedAlert + " requested=" + alerts + " priority=" + priority
+                + " soundId=" + sound + " durationMs=" + durationMillis + " played=" + played);
+        return played;
     }
 
     /** Speaker tests and real events obey the same lock; failed playback never claims priority. */

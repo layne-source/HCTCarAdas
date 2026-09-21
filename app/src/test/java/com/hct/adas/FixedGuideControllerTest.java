@@ -264,28 +264,40 @@ public final class FixedGuideControllerTest {
     }
 
     @Test
-    public void targetLossOrInvalidDistanceHidesWithoutClearingTheSpeedLatch() {
+    public void targetLossOrInvalidDistanceKeepsTheNormalGuideWithoutClearingTheSpeedLatch() {
         FixedGuideController controller = openedController();
 
         assertEquals(DANGER, updateState(controller, 11_100L, 18.0,
                 LeadVehicleTracker.State.TRACKING, true, false, true));
-        assertEquals(HIDDEN, updateState(controller, 11_200L, 18.0,
+        assertEquals(MONITORING, updateState(controller, 11_200L, 18.0,
                 LeadVehicleTracker.State.LOST, false, false, true));
         assertEquals(NORMAL, updateState(controller, 11_300L, 18.0,
                 LeadVehicleTracker.State.TRACKING, true, false, false));
-        assertEquals(HIDDEN, updateState(controller, 11_400L, 18.0,
+        assertEquals(MONITORING, updateState(controller, 11_400L, 18.0,
                 LeadVehicleTracker.State.TRACKING, false, true, true));
         assertEquals(NORMAL, updateState(controller, 11_500L, 18.0,
                 LeadVehicleTracker.State.TRACKING, true, false, false));
     }
 
     @Test
+    public void lostTargetAtOpenSpeedStillKeepsTheGreenGuideActive() {
+        FixedGuideController controller = openedController();
+
+        assertEquals(MONITORING, updateState(controller, 11_100L, 25.0,
+                LeadVehicleTracker.State.LOST, false, false, false));
+        assertEquals(MONITORING, updateState(controller, 11_200L, 25.0,
+                LeadVehicleTracker.State.NONE, false, false, false));
+        assertEquals(MONITORING, updateState(controller, 11_300L, 25.0,
+                LeadVehicleTracker.State.CANDIDATE, false, false, false));
+    }
+
+    @Test
     public void targetLossStillAllowsLowSpeedToCloseTheGate() {
         FixedGuideController controller = openedController();
 
-        assertEquals(HIDDEN, updateState(controller, 11_100L, 15.0,
+        assertEquals(MONITORING, updateState(controller, 11_100L, 15.0,
                 LeadVehicleTracker.State.LOST, false, false, false));
-        assertEquals(HIDDEN, updateState(controller, 11_600L, 15.0,
+        assertEquals(MONITORING, updateState(controller, 11_600L, 15.0,
                 LeadVehicleTracker.State.LOST, false, false, false));
         assertEquals(HIDDEN, updateState(controller, 12_100L, 15.0,
                 LeadVehicleTracker.State.LOST, false, false, false));

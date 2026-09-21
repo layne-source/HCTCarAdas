@@ -1,5 +1,10 @@
 package com.hct.adas;
 
+import static com.hct.adas.FixedGuideController.Mode.DANGER;
+import static com.hct.adas.FixedGuideController.Mode.HIDDEN;
+import static com.hct.adas.FixedGuideController.Mode.MONITORING;
+import static com.hct.adas.FixedGuideController.Mode.NORMAL;
+import static com.hct.adas.FixedGuideController.Mode.WARNING;
 import static org.junit.Assert.assertEquals;
 
 import org.junit.Test;
@@ -7,6 +12,14 @@ import org.junit.Test;
 import java.util.Set;
 
 public final class VehicleOverlayStyleTest {
+    @Test
+    public void monitoringGuideUsesTheNormalFlowingRenderMode() {
+        assertEquals(NORMAL, VehicleOverlayView.renderModeFor(MONITORING));
+        assertEquals(HIDDEN, VehicleOverlayView.renderModeFor(HIDDEN));
+        assertEquals(WARNING, VehicleOverlayView.renderModeFor(WARNING));
+        assertEquals(DANGER, VehicleOverlayView.renderModeFor(DANGER));
+    }
+
     @Test
     public void cornerLengthScalesWithSmallVehicleBox() {
         assertEquals(24f, VehicleOverlayView.cornerLengthForBounds(100f, 100f, 1f), 0.001f);
