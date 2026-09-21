@@ -266,7 +266,7 @@ public final class LeadVehicleTrackerTest {
         VehicleDetector.Detection inLane = box(0.42f, 0.50f, 0.58f, 0.74f);
         LaneDepartureDetector.Observation unavailable = LaneDepartureDetector.Observation.UNAVAILABLE;
 
-        long oldId = confirm(tracker, 0, adjacent);
+        long oldId = confirm(tracker, 0, adjacent).trackId();
         assertEquals(oldId, tracker.update(frame(600, adjacent, inLane), unavailable).trackId());
         assertEquals(oldId, tracker.update(frame(800, adjacent, inLane), unavailable).trackId());
 
