@@ -2,7 +2,8 @@ package com.hct.adas;
 
 /** Pure geometry rules for the two-line installation calibration screen. */
 public final class CalibrationAlignment {
-    public static final double MIN_PITCH_DEGREES = 2.0;
+    // Allow level mounting and a small upward adjustment, not the camera model's full range.
+    public static final double MIN_PITCH_DEGREES = -5.0;
     public static final double MAX_PITCH_DEGREES = 14.0;
     public static final double MAX_CENTER_OFFSET = 0.12;
     private static final double ROUNDING_TOLERANCE = 1e-9;

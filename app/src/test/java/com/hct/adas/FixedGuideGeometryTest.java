@@ -93,7 +93,7 @@ public final class FixedGuideGeometryTest {
     @Test
     public void pitchAndCenterBoundariesStayInsideImageForSupportedLenses() {
         for (double hfov : new double[] {60.0, 90.0, 120.0}) {
-            for (double pitch : new double[] {2.0, 14.0}) {
+            for (double pitch : new double[] {-5.0, -2.0, 0.0, 2.0, 14.0}) {
                 for (double center : new double[] {0.38, 0.62}) {
                     CameraCalibration lens = CameraCalibration.fromWizard(
                             1280, 720, 1.55, hfov, pitch);
@@ -118,7 +118,7 @@ public final class FixedGuideGeometryTest {
 
     @Test
     public void confirmedBoundaryCalibrationSurvivesPitchRoundTrip() {
-        for (double pitch : new double[] {2.0, 14.0}) {
+        for (double pitch : new double[] {-5.0, 0.0, 2.0, 14.0}) {
             CameraCalibration lens = CameraCalibration.fromWizard(
                     1280, 720, 1.55, 120.0, pitch);
             CameraCalibration saved = CalibrationAlignment.confirm(
@@ -142,7 +142,7 @@ public final class FixedGuideGeometryTest {
     @Test
     public void rejectsPitchAndCenterOutsideInstallationLimits() {
         assertNull(FixedGuideGeometry.fromCalibration(
-                calibration(1280, 720, 1.9, 0.5), 1280, 720));
+                calibration(1280, 720, -5.01, 0.5), 1280, 720));
         assertNull(FixedGuideGeometry.fromCalibration(
                 calibration(1280, 720, 14.1, 0.5), 1280, 720));
         assertNull(FixedGuideGeometry.fromCalibration(
@@ -168,6 +168,16 @@ public final class FixedGuideGeometryTest {
                 1280, 720, 1.55, 0.1, 1.0, 2.0, 0.5);
 
         assertNull(FixedGuideGeometry.fromCalibration(saved, 1280, 720));
+    }
+
+    @Test
+    public void croppedOutGuideDoesNotDisableDistanceCalibration() {
+        CameraCalibration saved = CalibrationAlignment.confirm(
+                CameraCalibration.fromWizard(1280, 720, 1.55, 90.0, 8.0), 0.55, 0.5);
+        assertNull(FixedGuideGeometry.fromCalibration(saved, 1280, 720, 0.60));
+        assertTrue(AdasCalibrationMode.distanceReady(
+                CalibrationStore.Status.DISTANCE_READY, saved, 1280, 720));
+        assertTrue(Double.isFinite(saved.estimateDistanceMeters(0.65)));
     }
 
     @Test

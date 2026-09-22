@@ -80,10 +80,30 @@ public final class CalibrationStoreTest {
 
     @Test
     public void savedStatusCannotLegitimizeUnconfirmedGeometry() {
-        Map<String, Object> values = validValues();
-        values.put("pitch_degrees", Double.doubleToRawLongBits(0.0));
-        assertNull(store(values).load());
-        assertEquals(CalibrationStore.Status.UNCONFIGURED, store(values).loadStatus());
+        for (double pitch : new double[] {-5.01, -20.0, 14.01}) {
+            Map<String, Object> values = validValues();
+            values.put("pitch_degrees", Double.doubleToRawLongBits(pitch));
+            assertNull(store(values).load());
+            assertEquals(CalibrationStore.Status.UNCONFIGURED, store(values).loadStatus());
+        }
+    }
+
+    @Test
+    public void levelAndUpwardProfilesRetainDistanceAfterReload() {
+        for (double pitch : new double[] {0.0, -2.0, -5.0}) {
+            Map<String, Object> values = validValues();
+            values.put("pitch_degrees", Double.doubleToRawLongBits(pitch));
+            CalibrationStore store = store(values);
+            CameraCalibration loaded = store.load();
+            assertNotNull(loaded);
+            assertEquals(CalibrationStore.Status.DISTANCE_READY, store.loadStatus());
+            assertEquals(pitch, loaded.pitchDegrees(), 0.0);
+            double sin = Math.sin(Math.toRadians(pitch));
+            double cos = Math.cos(Math.toRadians(pitch));
+            double bottom = 0.5 + 0.9 * (1.55 * cos - 30.0 * sin)
+                    / (30.0 * cos + 1.55 * sin);
+            assertEquals(30.0, loaded.estimateDistanceMeters(bottom), 1e-6);
+        }
     }
 
     private static Map<String, Object> validValues() {

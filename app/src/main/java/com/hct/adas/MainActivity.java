@@ -47,8 +47,9 @@ public final class MainActivity extends Activity {
     private static final int LOCATION_PERMISSION_REQUEST = 11;
     private static final DateTimeFormatter CLOCK_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss", Locale.ROOT);
-    /** Fallback installation pitch for a typical windshield-inside camera mount. */
-    private static final double INITIAL_PITCH_DEGREES = 8.0;
+    /** Start each installation draft at the center of the visible preview. */
+    private static final double INITIAL_PITCH_DEGREES = 0.0;
+    private static final double SIMULATION_PITCH_DEGREES = 8.0;
     /**
      * Camera height above ground for the presets the wizard offers. These describe where the lens sits
      * for a windshield-inside mount just below the factory forward camera, which is the installation
@@ -1168,7 +1169,7 @@ public final class MainActivity extends Activity {
         }
         // Synthetic boxes use this fixture, independent of the real camera's saved calibration.
         calibration = CameraCalibration.fromWizard(width, height, HEIGHT_SEDAN_METERS, 90.0,
-                INITIAL_PITCH_DEGREES);
+                SIMULATION_PITCH_DEGREES);
         calibrationStatus = scenario == AdasSimulator.Scenario.AUTO_CALIBRATION
                 ? CalibrationStore.Status.WIZARD_COMPLETED : CalibrationStore.Status.CALIBRATED;
         calibrationProgress = calibrationStatus == CalibrationStore.Status.CALIBRATED ? 100 : 0;
@@ -1310,10 +1311,10 @@ public final class MainActivity extends Activity {
             CameraCalibration previous = calibration;
             boolean sameSize = previous != null && previous.isUsableFor(
                     currentFrame.frameWidth(), currentFrame.frameHeight());
-            // Always build with the newly selected lens. Preview and confirmation share this draft.
+            // Start the horizon at image center; keep the saved calibration active until confirmation.
             CameraCalibration lens = CameraCalibration.fromWizard(currentFrame.frameWidth(),
                     currentFrame.frameHeight(), heightMeters, hfov,
-                    sameSize ? previous.pitchDegrees() : INITIAL_PITCH_DEGREES);
+                    INITIAL_PITCH_DEGREES);
             pendingCalibration = new CameraCalibration(lens.imageWidth(), lens.imageHeight(),
                     lens.cameraHeightMeters(), lens.focalLengthYNormalized(),
                     lens.principalPointYNormalized(), lens.pitchDegrees(),
