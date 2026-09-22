@@ -129,9 +129,9 @@ public final class CalibrationOverlayView extends View {
         canvas.drawLine(centerX, top, centerX, bottom, linePaint);
 
         textPaint.setColor(color);
-        canvas.drawText("地平线", left + 24f * density,
+        canvas.drawText(getContext().getString(R.string.calibration_horizon), left + 24f * density,
                 Math.max(top + 56f * density, horizonY - 12f * density), textPaint);
-        String centerLabel = "请对齐车头中心";
+        String centerLabel = getContext().getString(R.string.calibration_align_center);
         float centerLabelWidth = textPaint.measureText(centerLabel);
         canvas.drawText(centerLabel,
                 Math.max(left + 12f * density, Math.min(right - centerLabelWidth - 12f * density,
@@ -139,8 +139,9 @@ public final class CalibrationOverlayView extends View {
                 Math.min(bottom - 20f * density, height - 88f * density), textPaint);
 
         textPaint.setTextSize(13f * density);
-        String state = !previewAvailable ? "等待实时画面"
-                : valid ? String.format(Locale.ROOT, "停车对齐两线 · 俯仰 %.1f°", result.pitchDegrees())
+        String state = !previewAvailable ? getContext().getString(R.string.calibration_waiting_preview)
+                : valid ? String.format(Locale.ROOT,
+                        getContext().getString(R.string.calibration_aligned_pitch), result.pitchDegrees())
                 : invalidReason();
         float stateWidth = textPaint.measureText(state);
         textPaint.setColor(Color.WHITE);
@@ -205,12 +206,12 @@ public final class CalibrationOverlayView extends View {
 
     private String invalidReason() {
         if (result.pitchOutOfRange() && result.centerOutOfRange()) {
-            return "水平线和中心线超出允许范围";
+            return getContext().getString(R.string.calibration_invalid_both);
         }
         if (result.pitchOutOfRange()) {
-            return "水平线位置无效，请小幅调整";
+            return getContext().getString(R.string.calibration_invalid_horizon);
         }
-        return "中心线偏移过大，请小幅调整";
+        return getContext().getString(R.string.calibration_invalid_center);
     }
 
     private static double clamp(double value, double min, double max) {

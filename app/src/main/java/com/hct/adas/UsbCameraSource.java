@@ -128,7 +128,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                     && now - openingStartedNanos >= OPEN_WATCHDOG_TIMEOUT_NANOS) {
                 int token = invalidatePreview();
                 cameraHandler.post(UsbCameraSource.this::closeCamera);
-                listener.onError("USB 摄像头打开超时，正在自动重连");
+                listener.onError(activity.getString(R.string.camera_open_timeout));
                 scheduleOpenRetry(token);
             } else if (previewActive) {
                 long reference = lastFrameNanos > 0L ? lastFrameNanos : previewStartedNanos;
@@ -136,8 +136,8 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                     int token = invalidatePreview();
                     cameraHandler.post(UsbCameraSource.this::closeCamera);
                     listener.onError(openRetryCount < 3
-                            ? "USB 摄像头视频流中断，正在自动重连"
-                            : "USB 摄像头视频流中断，自动重试已用尽，请点击重试");
+                            ? activity.getString(R.string.camera_stream_retrying)
+                            : activity.getString(R.string.camera_stream_retry_exhausted));
                     scheduleOpenRetry(token);
                 } else if (streamConfirmed && lastFrameNanos - previewStartedNanos >= STREAM_STABLE_NANOS) {
                     // A single frame followed by another outage must not replenish the retry budget.
@@ -160,7 +160,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                     if (usbManager.hasPermission(device)) {
                         tryOpen();
                     } else {
-                        listener.onError("USB 摄像头授权被拒绝，请点击重试授权");
+                        listener.onError(activity.getString(R.string.camera_permission_denied));
                     }
                 }
             } else if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction())) {
@@ -176,7 +176,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                     cameraSelectionNeedsConfirmation = usbManager.getDeviceList().values().stream()
                             .anyMatch(UsbCameraSource::isVideoDevice);
                     if (cameraSelectionNeedsConfirmation) {
-                        listener.onError("前视摄像头已断开，请确认剩余摄像头后点击重试");
+                        listener.onError(activity.getString(R.string.camera_detached_confirmation));
                     }
                 } else if (selectedDevice == null) {
                     // Startup ambiguity can resolve when one of two cameras is unplugged.
@@ -234,7 +234,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         pausedDeviceName = null;
         selectCamera();
         if (cameraSelectionNeedsConfirmation) {
-            listener.onError("前视摄像头已断开，请确认剩余摄像头后点击重试");
+            listener.onError(activity.getString(R.string.camera_detached_confirmation));
         }
     }
 
@@ -249,7 +249,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         String name = singleCameraName(candidates);
         if (name == null) {
             if (candidates.size() > 1) {
-                listener.onError("检测到多个 USB 摄像头，请仅保留前视摄像头");
+                listener.onError(activity.getString(R.string.camera_multiple_devices));
             }
             return;
         }
@@ -286,7 +286,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             usbManager.requestPermission(device, permission);
         } catch (RuntimeException failure) {
             permissionRequested = false;
-            reportError(generation.get(), "无法申请 USB 摄像头权限", failure);
+            reportError(generation.get(), activity.getString(R.string.camera_permission_request_failed), failure);
         }
     }
 
@@ -417,7 +417,8 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
             mainHandler.post(() -> {
                 if (isCurrent(token)) {
                     int retryToken = invalidatePreview();
-                    listener.onError("USB 摄像头打开失败: " + failure.getClass().getSimpleName());
+                    listener.onError(activity.getString(R.string.camera_open_failed,
+                            failure.getClass().getSimpleName()));
                     scheduleOpenRetry(retryToken);
                 }
             });
@@ -491,7 +492,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
         cameraSelectionNeedsConfirmation = false;
         invalidatePreview();
         cameraHandler.post(this::closeCamera);
-        listener.onError("正在重新连接 USB 摄像头");
+        listener.onError(activity.getString(R.string.camera_reconnecting));
         if (selectedDevice == null) {
             selectCamera();
         } else if (usbManager.hasPermission(selectedDevice)) {

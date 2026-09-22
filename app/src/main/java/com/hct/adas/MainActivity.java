@@ -350,7 +350,7 @@ public final class MainActivity extends Activity {
                     }
 
                     public void onError(String message) {
-                        updateCameraStatus(message + " · 点击重试", true);
+                        updateCameraStatus(getString(R.string.status_retry_suffix, message), true);
                     }
                 });
         previewView.addOnLayoutChangeListener((view, l, t, r, b, oldL, oldT, oldR, oldB) -> {
@@ -487,7 +487,7 @@ public final class MainActivity extends Activity {
             startActivity(intent);
         } catch (RuntimeException unavailable) {
             Log.w(TAG, "Cannot open system settings", unavailable);
-            Toast.makeText(this, "请在系统设置中开启相机、精确定位权限和定位服务", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, R.string.status_system_settings_permissions, Toast.LENGTH_LONG).show();
         }
     }
 
@@ -547,7 +547,7 @@ public final class MainActivity extends Activity {
                 locationPermissionDenied = true;
                 egoSpeedKmh = Double.NaN;
                 speedTimestampNanos = 0L;
-                setStatusText("需要精确定位权限，车速相关功能已暂停", false);
+                setStatusText(getString(R.string.status_location_permission), false);
             }
         }
     }
@@ -655,7 +655,7 @@ public final class MainActivity extends Activity {
         OverlayPresentation presentation = snapshotPresentation(workerFailed, previewReady,
                 validSpeedKmh());
         if (!simulator.isRunning() && workerFailed) {
-            updateRuntimeStatus("前车检测暂不可用");
+            updateRuntimeStatus(getString(R.string.status_detection_unavailable));
             overlayView.setResult(null, null);
         } else if (presentation != null) {
             analysis = presentation.analysis();
@@ -686,13 +686,13 @@ public final class MainActivity extends Activity {
             setStatusText(cameraStatus, false);
         } else if (runtimeStatus == null || runtimeStatus.isEmpty()) {
             if (locationPermissionDenied) {
-                setStatusText("需要精确定位权限 · 点击恢复", false);
+                setStatusText(getString(R.string.status_location_permission_action), false);
             } else if (!locationEnabled()) {
-                setStatusText("系统定位已关闭或不可用 · 点击检查", false);
+                setStatusText(getString(R.string.status_location_unavailable), false);
             } else if (!locationUpdatesRequested) {
-                setStatusText("车速定位请求失败 · 点击重试", false);
+                setStatusText(getString(R.string.status_speed_retry), false);
             } else if (!validSpeedKmh()) {
-                setStatusText("等待有效 GPS 车速，车速相关功能已暂停", false);
+                setStatusText(getString(R.string.status_waiting_speed), false);
             } else {
                 setStatusText(cameraStatus, true);
             }
@@ -701,11 +701,11 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private static String audioStatusText(AlertAudio.Status status) {
+    private String audioStatusText(AlertAudio.Status status) {
         return switch (status) {
             case READY, LOADING -> null;
-            case UNAVAILABLE -> "报警音不可用 · 点击重试";
-            case MUTED -> "媒体音量已静音，声音预警不可用";
+            case UNAVAILABLE -> getString(R.string.status_audio_unavailable);
+            case MUTED -> getString(R.string.status_audio_muted);
         };
     }
 
@@ -715,7 +715,8 @@ public final class MainActivity extends Activity {
                 ? (validSpeedKmh() ? egoSpeedKmh : Double.NaN)
                 : displaySpeedKmh(analysis);
         speedView.setText(Double.isFinite(speed)
-                ? String.format(Locale.ROOT, "%.0f km/h", speed) : "-- km/h");
+                ? getString(R.string.speed_value, speed)
+                : getString(R.string.speed_placeholder));
     }
 
 
@@ -1278,10 +1279,12 @@ public final class MainActivity extends Activity {
             }
         }
 
-        calibrationStatusView.setText(calibration == null ? "未校准"
-                : frame == null ? "待连接"
+        calibrationStatusView.setText(calibration == null ? getString(R.string.calibration_status_unconfigured)
+                : frame == null ? getString(R.string.calibration_status_waiting)
                 : AdasCalibrationMode.distanceReady(calibrationStatus, calibration,
-                        frame.frameWidth(), frame.frameHeight()) ? "已校准" : "需校准");
+                        frame.frameWidth(), frame.frameHeight())
+                        ? getString(R.string.calibration_status_ready)
+                        : getString(R.string.calibration_status_required));
         bindAlertSwitch(fcwSoundSwitch, AdasDecisionEngine.Alert.FCW);
         bindAlertSwitch(hmwSoundSwitch, AdasDecisionEngine.Alert.HMW_CRITICAL);
         bindAlertSwitch(lvsaSoundSwitch, AdasDecisionEngine.Alert.LVSA);
@@ -1298,7 +1301,7 @@ public final class MainActivity extends Activity {
         calibrationAction.setOnClickListener(view -> {
             UsbCameraSource.PreviewSnapshot currentFrame = currentCalibrationFrame();
             if (currentFrame == null) {
-                Toast.makeText(this, "请等待实时摄像头画面", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, R.string.toast_wait_camera, Toast.LENGTH_SHORT).show();
                 return;
             }
             double heightMeters = rbSuv.isChecked() ? HEIGHT_SUV_METERS
@@ -1382,12 +1385,12 @@ public final class MainActivity extends Activity {
     private synchronized void confirmInstallationCalibration(CameraCalibration next) {
         if (!calibrationFrameMatches(currentCalibrationFrame())) {
             calibrationOverlayView.setPreviewAvailable(false);
-            Toast.makeText(this, "画面已变化，请重新校准", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_calibration_changed, Toast.LENGTH_SHORT).show();
             return;
         }
         applyCameraCalibration(next);
         hideCalibrationOverlay();
-        Toast.makeText(this, "ADAS 校准已保存", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, R.string.toast_calibration_saved, Toast.LENGTH_SHORT).show();
     }
 
     /** Use only a real, fresh frame; never guess 720p when the stream is not available. */

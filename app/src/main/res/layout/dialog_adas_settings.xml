@@ -19,7 +19,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="ADAS 设置"
+            android:text="@string/settings_title"
             android:textColor="@color/adas_text_primary"
             android:textSize="19sp"
             android:textStyle="bold" />
@@ -28,7 +28,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="5dp"
-            android:text="车辆高度与镜头视场角会影响距离估计"
+            android:text="@string/settings_subtitle"
             android:textColor="@color/adas_text_secondary"
             android:textSize="12sp" />
     </LinearLayout>
@@ -60,7 +60,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:text="车辆类型"
+            android:text="@string/vehicle_type"
             android:textColor="@color/adas_text_secondary"
             android:textSize="12sp"
             android:textStyle="bold" />
@@ -76,15 +76,18 @@
             <RadioButton
                 android:id="@+id/rb_sedan"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="轿车"
+                android:minHeight="44dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="@string/vehicle_sedan"
+                android:maxLines="2"
+                android:ellipsize="end"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -92,15 +95,18 @@
             <RadioButton
                 android:id="@+id/rb_suv"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="SUV"
+                android:minHeight="44dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="@string/vehicle_suv"
+                android:maxLines="2"
+                android:ellipsize="end"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -108,14 +114,17 @@
             <RadioButton
                 android:id="@+id/rb_truck"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:text="货车"
+                android:minHeight="44dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="@string/vehicle_truck"
+                android:maxLines="2"
+                android:ellipsize="end"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -125,7 +134,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="摄像头视野范围"
+            android:text="@string/fov_title"
             android:textColor="@color/adas_text_secondary"
             android:textSize="12sp"
             android:textStyle="bold" />
@@ -141,16 +150,19 @@
             <RadioButton
                 android:id="@+id/rb_fov_90"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:contentDescription="窄视野（90度）"
-                android:text="窄视野"
+                android:minHeight="44dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:contentDescription="@string/fov_narrow"
+                android:text="@string/fov_narrow"
+                android:maxLines="2"
+                android:ellipsize="end"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -158,16 +170,19 @@
             <RadioButton
                 android:id="@+id/rb_fov_100"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:contentDescription="标准视野（100度）"
-                android:text="标准视野"
+                android:minHeight="44dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:contentDescription="@string/fov_standard"
+                android:text="@string/fov_standard"
+                android:maxLines="2"
+                android:ellipsize="end"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -175,15 +190,18 @@
             <RadioButton
                 android:id="@+id/rb_fov_120"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:background="@drawable/settings_option"
                 android:button="@null"
                 android:gravity="center"
-                android:minHeight="0dp"
-                android:padding="0dp"
-                android:contentDescription="广视野（120度）"
-                android:text="广视野"
+                android:minHeight="44dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:contentDescription="@string/fov_wide"
+                android:text="@string/fov_wide"
+                android:maxLines="2"
+                android:ellipsize="end"
                 android:textColor="@color/settings_option_text"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -193,20 +211,23 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="声音提醒"
+            android:text="@string/audio_alerts"
             android:textColor="@color/adas_text_secondary"
             android:textSize="12sp"
             android:textStyle="bold" />
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:minHeight="52dp"
             android:layout_marginTop="8dp"
             android:background="@drawable/settings_toggle"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="14dp"
-            android:paddingEnd="8dp">
+            android:paddingTop="6dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="6dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -217,7 +238,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="前向碰撞警告"
+                    android:text="@string/fcw_title"
                     android:textColor="@color/adas_text_primary"
                     android:textSize="13sp"
                     android:textStyle="bold" />
@@ -226,7 +247,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="1dp"
-                    android:text="碰撞风险很高时提醒"
+                    android:text="@string/fcw_summary"
                     android:textColor="@color/adas_text_secondary"
                     android:textSize="10sp" />
             </LinearLayout>
@@ -235,7 +256,7 @@
                 android:id="@+id/switch_fcw_sound"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:contentDescription="前向碰撞警告声音"
+                android:contentDescription="@string/fcw_content_desc"
                 android:minWidth="48dp"
                 android:padding="0dp"
                 android:showText="false" />
@@ -243,13 +264,16 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:minHeight="52dp"
             android:layout_marginTop="6dp"
             android:background="@drawable/settings_toggle"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="14dp"
-            android:paddingEnd="8dp">
+            android:paddingTop="6dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="6dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -260,7 +284,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="车距过近提醒"
+                    android:text="@string/hmw_title"
                     android:textColor="@color/adas_text_primary"
                     android:textSize="13sp"
                     android:textStyle="bold" />
@@ -269,7 +293,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="1dp"
-                    android:text="跟车距离过近时提醒"
+                    android:text="@string/hmw_summary"
                     android:textColor="@color/adas_text_secondary"
                     android:textSize="10sp" />
             </LinearLayout>
@@ -278,7 +302,7 @@
                 android:id="@+id/switch_hmw_sound"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:contentDescription="车距过近提醒声音"
+                android:contentDescription="@string/hmw_content_desc"
                 android:minWidth="48dp"
                 android:padding="0dp"
                 android:showText="false" />
@@ -286,13 +310,16 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:minHeight="52dp"
             android:layout_marginTop="6dp"
             android:background="@drawable/settings_toggle"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="14dp"
-            android:paddingEnd="8dp">
+            android:paddingTop="6dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="6dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -303,7 +330,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="前车起步提醒"
+                    android:text="@string/lvsa_title"
                     android:textColor="@color/adas_text_primary"
                     android:textSize="13sp"
                     android:textStyle="bold" />
@@ -312,7 +339,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="1dp"
-                    android:text="等候时前车起步提醒"
+                    android:text="@string/lvsa_summary"
                     android:textColor="@color/adas_text_secondary"
                     android:textSize="10sp" />
             </LinearLayout>
@@ -321,7 +348,7 @@
                 android:id="@+id/switch_lvsa_sound"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:contentDescription="前车起步提醒声音"
+                android:contentDescription="@string/lvsa_content_desc"
                 android:minWidth="48dp"
                 android:padding="0dp"
                 android:showText="false" />
@@ -336,7 +363,8 @@
         <LinearLayout
             android:id="@+id/calibration_action"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
             android:layout_marginTop="14dp"
             android:background="@drawable/settings_action"
             android:clickable="true"
@@ -344,7 +372,9 @@
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="16dp"
-            android:paddingEnd="16dp">
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -355,7 +385,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="ADAS 校准"
+                    android:text="@string/calibration_title"
                     android:textColor="@color/adas_text_primary"
                     android:textSize="14sp"
                     android:textStyle="bold" />
@@ -364,7 +394,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="按当前镜头重新建立参考线"
+                    android:text="@string/calibration_summary"
                     android:textColor="@color/adas_text_secondary"
                     android:textSize="11sp" />
             </LinearLayout>
@@ -373,7 +403,7 @@
                 android:id="@+id/calibration_status"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="未校准"
+                android:text="@string/calibration_status_unconfigured"
                 android:textColor="@color/adas_accent_bright"
                 android:textSize="12sp"
                 android:textStyle="bold" />

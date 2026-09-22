@@ -333,13 +333,15 @@ public final class VehicleOverlayView extends View {
                     ? calibration.horizonYNormalized() : 0.438;
             float horizonY = top + (float) normHorizon * height;
             canvas.drawLine(left, horizonY, left + width, horizonY, calibrationPaint);
-            canvas.drawText("地平线", left + 8f * getResources().getDisplayMetrics().density,
+            canvas.drawText(getContext().getString(R.string.overlay_horizon),
+                    left + 8f * getResources().getDisplayMetrics().density,
                     Math.max(textPaint.getTextSize(), horizonY - 4f), textPaint);
 
             calibrationPaint.setColor(0xCCFFCC80);
             float hoodY = getHoodY(top, height);
             canvas.drawLine(left + width * 0.15f, hoodY, left + width * 0.85f, hoodY, calibrationPaint);
-            canvas.drawText("机盖对齐参考线", left + width * 0.16f, hoodY - 4f, textPaint);
+            canvas.drawText(getContext().getString(R.string.overlay_hood_reference),
+                    left + width * 0.16f, hoodY - 4f, textPaint);
         }
 
         if (result == null) {
@@ -415,7 +417,8 @@ public final class VehicleOverlayView extends View {
         if (!currentTargetValid()) {
             return "";
         }
-        return String.format(Locale.ROOT, "前车 %.1f m", motion.distanceMeters());
+        return String.format(Locale.ROOT, getContext().getString(R.string.overlay_target_distance),
+                motion.distanceMeters());
     }
 
     private void prepareTargetReadout(float left, float top, float width, float height) {
@@ -873,12 +876,16 @@ public final class VehicleOverlayView extends View {
         float rowY = top + height * (float) LaneDepartureDetector.ROI_TOP_ROW;
         float textX = left + 8f * density;
         textPaint.setColor(lineColor);
-        canvas.drawText(String.format(Locale.ROOT, "Offset %.2f m", laneSnapshot.centerOffsetMeters()),
+        canvas.drawText(getContext().getString(R.string.overlay_offset,
+                        laneSnapshot.centerOffsetMeters()),
                 textX, Math.max(textPaint.getTextSize(), rowY - 4f), textPaint);
         String radius = laneSnapshot.curvatureValid()
-                ? String.format(Locale.ROOT, "R %.0f m", Math.abs(laneSnapshot.curvatureRadiusMeters()))
-                : laneSnapshot.curvatureKnown() ? "R straight" : "R unknown";
-        canvas.drawText("LDWS / " + radius, textX,
+                ? getContext().getString(R.string.overlay_radius,
+                        Math.abs(laneSnapshot.curvatureRadiusMeters()))
+                : laneSnapshot.curvatureKnown()
+                        ? getContext().getString(R.string.overlay_radius_straight)
+                        : getContext().getString(R.string.overlay_radius_unknown);
+        canvas.drawText(getContext().getString(R.string.overlay_ldws, radius), textX,
                 Math.max(textPaint.getTextSize() * 2f, rowY - 4f + textPaint.getTextSize()),
                 textPaint);
 

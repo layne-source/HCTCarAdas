@@ -32,7 +32,7 @@
             android:shadowDx="0"
             android:shadowDy="1"
             android:shadowRadius="4"
-            android:text="2026-09-19  12:00:00"
+            android:text="@string/clock_placeholder"
             android:textColor="#FFF4F7FA"
             android:textSize="15sp"
             android:textStyle="bold" />
@@ -69,7 +69,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:includeFontPadding="false"
-            android:text="-- km/h"
+            android:text="@string/speed_placeholder"
             android:textColor="#FFF5F8FA"
             android:textSize="17sp"
             android:textStyle="bold" />
@@ -84,7 +84,7 @@
         android:layout_marginBottom="10dp"
         android:background="@android:color/transparent"
         android:clickable="true"
-        android:contentDescription="ADAS 设置"
+            android:contentDescription="@string/settings_button_desc"
         android:focusable="true"
         android:onClick="openCalibrationFromSettings"
         android:padding="10dp"
@@ -121,7 +121,7 @@
                 android:focusable="true"
                 android:gravity="center"
                 android:onClick="cancelCalibrationOverlay"
-                android:text="取消"
+                android:text="@string/button_cancel"
                 android:textColor="#FFFFFFFF"
                 android:textSize="14sp" />
 
@@ -135,7 +135,7 @@
                 android:focusable="true"
                 android:gravity="center"
                 android:onClick="confirmCalibrationOverlay"
-                android:text="校正"
+                android:text="@string/button_calibrate"
                 android:textColor="#FF06110F"
                 android:textSize="14sp"
                 android:textStyle="bold" />
