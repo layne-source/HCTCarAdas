@@ -54,7 +54,10 @@ public final class VehicleOverlayView extends View {
     private static final float WARNING_MARKER_ICON_WIDTH_RATIO = 0.34f;
     private static final float WARNING_MARKER_ICON_HEIGHT_RATIO = 0.30f;
     private static final float WARNING_MARKER_ICON_TOP_RATIO = 0.42f;
-    private static final float TARGET_LABEL_BOTTOM_GAP_DP = 84f;
+    static final float TARGET_LABEL_BOTTOM_GAP_DP = 42f;
+    static final float TARGET_LABEL_HEIGHT_DP = 28f;
+    static final float TARGET_LABEL_PADDING_X_DP = 10f;
+    static final float TARGET_LABEL_CORNER_RADIUS_DP = 7f;
     private static final long COLOR_FADE_NANOS = 250_000_000L;
     private static final long ARROW_CYCLE_NANOS = 1_800_000_000L;
     private final FixedGuideController guideController = new FixedGuideController();
@@ -391,6 +394,14 @@ public final class VehicleOverlayView extends View {
         return mode == FixedGuideController.Mode.MONITORING
                 ? FixedGuideController.Mode.NORMAL : mode;
     }
+    static float targetLabelCardHeight(float textSize, float density) {
+        return Math.max(TARGET_LABEL_HEIGHT_DP * density, textSize + 12f * density);
+    }
+
+    static float targetLabelBaseline(float cardCenterY, float fontAscent, float fontDescent) {
+        return cardCenterY - (fontAscent + fontDescent) / 2f;
+    }
+
 
     private boolean currentTargetValid() {
         return tracking != null && tracking.state() == LeadVehicleTracker.State.TRACKING
@@ -420,19 +431,25 @@ public final class VehicleOverlayView extends View {
         float density = getResources().getDisplayMetrics().density;
         float textSize = 14f * getResources().getDisplayMetrics().scaledDensity;
         textPaint.setTextSize(textSize);
-        float paddingX = 8f * density;
-        float paddingY = 5f * density;
+        float paddingX = TARGET_LABEL_PADDING_X_DP * density;
         float labelWidth = textPaint.measureText(targetLabel) + paddingX * 2f;
         float labelLeft = Math.max(8f * density,
                 Math.min(18f * density, getWidth() - labelWidth - 8f * density));
-        // Keep the distance card aligned with the lower-left speed readout while leaving a clear
-        // visual gap above it; anchoring it to 48 dp made the text look buried at the bottom.
-        float bottomSafeGap = Math.max(TARGET_LABEL_BOTTOM_GAP_DP * density,
+
+        float cardHeight = targetLabelCardHeight(textSize, density);
+        float bottomMargin = Math.max(TARGET_LABEL_BOTTOM_GAP_DP * density,
                 26f * getResources().getDisplayMetrics().scaledDensity);
-        targetLabelBaseline = Math.max(top + textSize + paddingY,
-                getHeight() - bottomSafeGap);
-        targetLabelBounds.set(labelLeft, targetLabelBaseline - textSize - paddingY,
-                labelLeft + labelWidth, targetLabelBaseline + paddingY * 0.5f);
+        float cardBottom = getHeight() - bottomMargin;
+        float cardTop = cardBottom - cardHeight;
+        if (cardTop < top + 8f * density) {
+            cardTop = top + 8f * density;
+            cardBottom = cardTop + cardHeight;
+        }
+        targetLabelBounds.set(labelLeft, cardTop, labelLeft + labelWidth, cardBottom);
+
+        Paint.FontMetrics fontMetrics = textPaint.getFontMetrics();
+        targetLabelBaseline = targetLabelBaseline(targetLabelBounds.centerY(),
+                fontMetrics.ascent, fontMetrics.descent);
     }
 
     /** Draws the cached label using exactly the same bounds excluded from the reference band. */
@@ -441,12 +458,19 @@ public final class VehicleOverlayView extends View {
             return;
         }
         float density = getResources().getDisplayMetrics().density;
+        float textSize = 14f * getResources().getDisplayMetrics().scaledDensity;
+        textPaint.setTextSize(textSize);
         textPaint.setColor(Color.WHITE);
         targetLabelBackgroundPaint.setColor((selectedColor() & 0x00FFFFFF) | 0xD9000000);
-        canvas.drawRoundRect(targetLabelBounds, 7f * density, 7f * density,
-                targetLabelBackgroundPaint);
-        canvas.drawText(targetLabel, targetLabelBounds.left + 8f * density,
-                targetLabelBaseline, textPaint);
+        canvas.drawRoundRect(targetLabelBounds, TARGET_LABEL_CORNER_RADIUS_DP * density,
+                TARGET_LABEL_CORNER_RADIUS_DP * density, targetLabelBackgroundPaint);
+        textPaint.setTextAlign(Paint.Align.CENTER);
+        try {
+            canvas.drawText(targetLabel, targetLabelBounds.centerX(),
+                    targetLabelBaseline, textPaint);
+        } finally {
+            textPaint.setTextAlign(Paint.Align.LEFT);
+        }
     }
 
     private void drawWarningMarker(Canvas canvas) {

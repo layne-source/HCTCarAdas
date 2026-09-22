@@ -6,6 +6,7 @@ import static com.hct.adas.FixedGuideController.Mode.MONITORING;
 import static com.hct.adas.FixedGuideController.Mode.NORMAL;
 import static com.hct.adas.FixedGuideController.Mode.WARNING;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -97,5 +98,79 @@ public final class VehicleOverlayStyleTest {
                 AdasDecisionEngine.distanceOnlyDecision(7.0, 0.0, true), true));
         assertEquals(0xFFFF525E, VehicleOverlayView.warningColorForDecision(
                 AdasDecisionEngine.distanceOnlyDecision(3.5, 0.0, true), true));
+    }
+    @Test
+    public void targetLabelCardHeightProvidesComfortableBadgePadding() {
+        assertEquals(28f, VehicleOverlayView.targetLabelCardHeight(14f, 1f), 0.001f);
+        assertEquals(56f, VehicleOverlayView.targetLabelCardHeight(28f, 2f), 0.001f);
+        assertEquals(36f, VehicleOverlayView.targetLabelCardHeight(24f, 1f), 0.001f);
+    }
+
+    @Test
+    public void targetLabelBaselineCentersTextSymmetricallyWithinCard() {
+        float cardTop = 100f;
+        float cardBottom = 128f;
+        float cardCenterY = (cardTop + cardBottom) / 2f;
+        float fontAscent = -14f;
+        float fontDescent = 4f;
+
+        float baseline = VehicleOverlayView.targetLabelBaseline(cardCenterY, fontAscent, fontDescent);
+        float glyphTop = baseline + fontAscent;
+        float glyphBottom = baseline + fontDescent;
+
+        float topPadding = glyphTop - cardTop;
+        float bottomPadding = cardBottom - glyphBottom;
+
+        assertEquals(topPadding, bottomPadding, 0.001f);
+        assertEquals(5f, topPadding, 0.001f);
+        assertEquals(5f, bottomPadding, 0.001f);
+    }
+
+    @Test
+    public void targetLabelBottomGapIsPositionedCloserToSpeedReadout() {
+        assertEquals(42f, VehicleOverlayView.TARGET_LABEL_BOTTOM_GAP_DP, 0.001f);
+        assertEquals(28f, VehicleOverlayView.TARGET_LABEL_HEIGHT_DP, 0.001f);
+        assertEquals(10f, VehicleOverlayView.TARGET_LABEL_PADDING_X_DP, 0.001f);
+        assertEquals(7f, VehicleOverlayView.TARGET_LABEL_CORNER_RADIUS_DP, 0.001f);
+    }
+
+    @Test
+    public void targetLabelLayoutAdaptsAcrossSupportedCarScreenResolutions() {
+        int[][] screens = {
+                {800, 480, 213},
+                {1024, 600, 240},
+                {1280, 720, 260},
+                {1280, 800, 260},
+                {1920, 1080, 280},
+                {1920, 1200, 320},
+                {2000, 1200, 320},
+                {2560, 1440, 360},
+                {2560, 1600, 400}
+        };
+
+        for (int[] screen : screens) {
+            int width = screen[0];
+            int height = screen[1];
+            int dpi = screen[2];
+            float density = dpi / 160f;
+
+            float textSize = 14f * density;
+            float cardHeight = VehicleOverlayView.targetLabelCardHeight(textSize, density);
+            float bottomMargin = VehicleOverlayView.TARGET_LABEL_BOTTOM_GAP_DP * density;
+            float cardBottom = height - bottomMargin;
+            float cardTop = cardBottom - cardHeight;
+            float cardLeft = 18f * density;
+
+            float speedTop = height - (10f + 21f) * density;
+            float gapToSpeed = speedTop - cardBottom;
+
+            assertEquals(28f, cardHeight / density, 0.01f);
+            assertEquals(42f, bottomMargin / density, 0.01f);
+            assertEquals(11f, gapToSpeed / density, 0.01f);
+            assertEquals(18f, cardLeft / density, 0.01f);
+            assertTrue(cardTop / density >= 250f);
+            float estimatedCardWidth = 100f * density;
+            assertTrue(cardLeft + estimatedCardWidth < width - 100f * density);
+        }
     }
 }
