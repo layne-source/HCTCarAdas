@@ -26,14 +26,14 @@
 - [x] Clear or reinitialize motion history across LOST/reacquisition.
 - [x] Align lane projection, signed offset and curvature sign with the published geometry contract;
   keep ground-range and optical-axis depth separate in curvature fitting.
-- [x] Verify affected JVM tests and inspect diffs (pure Java harness; Gradle blocked by loopback).
+- [x] Verify affected JVM tests and inspect diffs (pure Java harness；当时 Gradle 启动受 loopback 阻断，后续用户已确认 Java 编译成功)。
 
 ### Task 2: USB lifecycle and camera identity/format
 
 **Files:** `UsbCameraSource.java` and focused tests if practical.
 
 - [x] Fix `SurfaceTexture` destruction release ownership (listener releases and returns `false`).
-- [x] Use serial number when safely available; fail closed when it is unavailable.
+- [x] Use serial number when safely available; fail closed when it is unavailable（历史方案；最终基线改为按图像分辨率绑定标定，不再使用 serial）。
 - [x] Expand format/size negotiation without assuming unsupported AAR methods.
 - [x] Verify source/API compatibility statically and with the focused Java harness.
 
@@ -48,7 +48,7 @@
 
 ### Task 4: Documentation alignment
 
-**Files:** `HCT_ADAS_Final_Design_Lane_Calibration_and_Outputs.md`, `HCT_ADAS_Final_Solution_and_Implementation_Plan.md`, `HCT_ADAS_Code_Review_Report.md`.
+**Files:** `HCT_ADAS_Final_Design_Lane_Calibration_and_Outputs.md`, `HCT_ADAS_Final_Solution_and_Implementation_Plan.md`, `HCT_ADAS_Code_Review_Report.md`, `HCT_ADAS_Feasibility_and_Architecture.md`, `HCT_ADAS_Fixed_Guide_Design.md`.
 
 - [x] Update formulas, current status, remaining risks, test count, and lifecycle/format/permission limitations to match final code.
 - [x] Remove stale claims that camera binding, open watchdog, LDW calibration gating, or audio preemption are absent.
@@ -58,4 +58,4 @@
 
 - [x] Review all agent diffs for ownership conflicts.
 - [x] Run permitted static checks and `git diff --check`; do not claim tests/build pass without fresh output.
-- [x] Summarize remaining unverified device risks. Commit/push remains a separate user-authorized step.
+- [x] Summarize remaining unverified device risks. 当前代码基线为 `bff24dd`；产品文档刷新按用户 2026-09-22 授权以独立文档提交保存。

@@ -1,17 +1,24 @@
 # HCT ADAS 全链路代码审查报告
 
-> **当前实现说明（2026-09-19）：** 本报告保留早期 rev.4/rev.5 的问题证据和关闭记录。当前工作区已移除摄像头序列号身份、旧安装向导和中央安装提示；标定由紧凑设置页进入双线校准，并只按当前画面分辨率保存。报告中涉及 `serial`、`cameraId`、`reloadCalibrationForCamera()` 和旧向导的段落均为历史记录，不代表当前运行链路。
+> **当前实现说明（2026-09-21）：** 本报告保留早期 rev.1～rev.7 的问题证据和关闭记录。当前代码已移除旧安装向导和中央安装提示；标定由紧凑设置页进入双线校准，并只按当前画面分辨率保存。FCW/HMW/LVSA 三类声音开关、固定透视参考带和内部滚动设置弹窗已在 `bff24dd` 收口。报告中涉及旧向导和历史摄像头身份策略的段落均为历史记录，不代表当前运行链路。
 
-> **本次全链路复核：** 修正固定纵向搜索区在大俯仰角下拒绝远车的问题；速度初始化改为相邻原始差分一致后才启用限幅，避免启动回摆产生假 FCW；校准与预览比例改用独立 UVC 帧快照，隔离相机会话；统一导航栏/切口避让；静态核验 AAR 并显式关闭原始 USB 控制块；修复模型异常无 message 时状态渲染可能空指针。双线保存完整预览配置和视觉中心，后者仅供未来固定图形使用。源码与独立复审已完成，未编译或运行 JUnit，不代表实车验收通过。
+> **本次全链路复核：** 修正固定纵向搜索区在大俯仰角下拒绝远车的问题；速度初始化改为相邻原始差分一致后才启用限幅，避免启动回摆产生假 FCW；校准与预览比例改用独立 UVC 帧快照，隔离相机会话；统一导航栏/切口避让；静态核验 AAR 并显式关闭原始 USB 控制块；修复模型异常无 message 时状态渲染可能空指针；补齐固定参考带、音频优先级和三类声音开关的链路审查。用户已确认编译、权限、室内模拟、设置弹窗和声音开关可用，本轮不重复执行 Gradle/JUnit，也不把室内模拟扩大为道路验收。
 
 | 项目 | 内容 |
 | --- | --- |
 | 审查对象 | `HCTCarAdas` 独立 Android 工程（Java 前台原型） |
-| 审查基线 | **rev.7 历史基线：Git HEAD `6534ca0`；当前为 2026-09-19 未提交工作区加固** |
-| 审查方式 | 全量静态审查；Gradle focused suite 受环境 `Unable to establish loopback connection` 阻断；历史记录显示曾用临时 `javac + JUnit` harness 跑过 106 个纯 Java 用例；未做设备验证 |
-| 审查范围 | 当前有效采集至告警/UI 链路；主源 22 个 Java 类、测试 15 类 147 个 `@Test` 方法；资源及四份文档一致性。关闭的 LDW 类保留为后续能力 |
-| 结论定性 | 历史 P1/P2 已闭环；当前工作区补入车道同侧连续性、`LOST` 重获速度清理、LiteRT 退避、精确定位权限门控、USB 生命周期/格式协商和音频主动抢占。几何、真实 UVC、LiteRT、音频和道路投影仍需设备验证 |
+| 审查基线 | **当前代码基线：Git HEAD `bff24dd`（`main` 与 `origin/main` 同步）** |
+| 审查方式 | 全量静态审查；用户已提供 `:app:compileDebugJavaWithJavac --no-daemon` 成功记录，并确认权限、室内模拟、设置弹窗和声音开关正常；本轮不重复执行 Gradle/JUnit |
+| 审查范围 | 当前有效采集至告警/UI 链路；主源 27 个 Java 类、测试 21 类 238 个 `@Test` 方法；资源及五份产品文档一致性。关闭的 LDW 类保留为后续能力 |
+| 结论定性 | 历史 P1/P2 与本轮加固已合并；FCW/HMW/LVSA、固定参考带、声音开关、设置弹窗、USB/定位/推理恢复链路已收口。真实 UVC 故障注入、音频通道/声压、测距精度、道路误报漏报和长稳仍是独立验收项 |
 | 修订记录 | **rev.2**：撤销 2 项误判、重定性 2 项为产品权衡<br>**rev.3**：基线 `6599789`，闭环 3 项 P1 + 2 组 P2，新增 P2-10<br>**rev.4**：基线 `32ea041`，闭环 P0-2 与 P2-10、新增 P2-11<br>**rev.5**：基线 `c6c1b46`，P1/P2 级别全部关闭（含 P2-8 按车机常亮前提关闭）；详见第 0 节 |
+
+### 当前产品状态（2026-09-21）
+
+- FCW 与 HMW 极近条件分别计算，满足时可同时保留两个事件；声音层按 `FCW > HMW_CRITICAL > LDW > LVSA` 只播放一个，避免重叠蜂鸣。关闭 FCW 声音不会屏蔽 HMW，关闭 HMW 声音也不会屏蔽 FCW。
+- 固定参考带在速度门槛打开后显示绿色渐隐带和 3 个向前循环箭头；无已确认前车时仍显示监测带，风险时改为黄色/红色，黄色箭头静止减弱，红色隐藏箭头。
+- `alerts/fcw.wav` 与 `alerts/hmw.wav` 为同一约 536 ms 音频，`alerts/lvsa.wav` 约 750 ms；三个声音开关通过 `SharedPreferences` 即时保存，关闭时停止当前对应播放，扬声器测试独立绕过开关。
+- 当前静态统计为 27 个主 Java 类、21 个 JVM 测试类、238 个 `@Test` 方法。用户已确认编译、权限、室内三场景模拟、设置弹窗和声音开关可用；不把这些结果等同于道路识别精度或量产认证。
 
 ---
 
@@ -26,15 +33,15 @@ rev.5 之后新增 4 个提交：一个崩溃修复与三次实测驱动的口�
 | `6534ca0` | **修复心跳日志格式符类型不匹配导致的进程崩溃**；日志格式化抽到 `AdasLogFormat` 并补 5 个单测 | 新增第 10 节；测试 82 → 87 |
 | `6f5d3e1` / `b1d2134` | 报告同步 | — |
 
-### 0.4 2026-09-18 工作区加固（未提交）
+### 0.4 2026-09-18 工作区加固（历史记录，已合并）
 
-当前工作区在历史基线之上还有以下改动；这些改动本轮只做静态审查，未宣称构建或设备通过：
+当时工作区在历史基线之上加入以下改动；现已合并到当前提交。设备层验证仍以本文顶部的当前状态为准：
 
 | 模块 | 当前行为 | 仍需验证 |
 |---|---|---|
 | `LaneDepartureDetector` | 热启动使用上一帧边界 ±0.07 搜索窗，并对位置跳变施加惩罚；冷启动才扫描整半幅 | 同侧接缝、邻近标线和真实夜间/雨雾帧 |
 | `LeadVehicleMotionEstimator` | `LOST`、ID 变化、时间倒退/间隔过大或标定变化清空速度历史，重获从零估计 | 真实遮挡重获和目标切换 |
-| `UsbCameraSource` | SurfaceTexture 由 listener 单次释放并返回 `false`；opening 8 s 与无帧 3 s watchdog；serial 身份，无 serial 不绑定；MJPEG/YUYV 多档协商 | AAR 控制块、真实格式枚举、热插拔和授权广播 |
+| `UsbCameraSource` | SurfaceTexture 由 listener 单次释放并返回 `false`；opening 8 s 与无帧 3 s watchdog；MJPEG/YUYV 多档协商。历史 rev.5 曾加入 serial 身份策略，当前标定已不按 serial 绑定 | AAR 控制块、真实格式枚举、热插拔和授权广播 |
 | `MainActivity` | LiteRT 运行时异常 5/10/20/40 s 退避；车速链路要求 FINE，COARSE 仅提示升级权限 | 真模型损坏/运行时异常、定位质量和 UI 故障提示 |
 | `AlertAudio` | 高优先级事件停止已有低优先级 SoundPool 流和 ToneGenerator；停止时清理优先级锁 | 实车音频焦点、媒体静音和声压 |
 
@@ -73,6 +80,8 @@ rev.4 之后新增 3 个提交，把报告里**可立即处理**的项清空：
 > 3. **P1-2 已关闭** —— 测试机按包名全开权限、USB 访问预先授予，授权弹窗与回调路径不被走到；限定条件见第 5 节 P1-2。
 >
 > **其中 P1-2 与 P2-8 属于"绑定宿主/设备前提"的关闭，而非"代码已修"**：前提变化时需重新开启，代码注释与本文对应章节都写明了触发条件。
+
+> **当前基线说明**：上面的 P2-4 与 serial/cameraId 记录只用于追溯 rev.5。当时的身份绑定实现已在后续收口中移除；当前 `bff24dd` 仅按保存的图像宽高校验标定，运行时通过 `reloadCalibration()` 载入配置。
 
 ---
 
@@ -117,7 +126,7 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 
 ### 1.1 覆盖清单
 
-`app/src/main/java/com/hct/adas/` 当前全部 20 个类：
+`app/src/main/java/com/hct/adas/` 当前全部 27 个类；新增的固定参考带、声音开关、视觉保持和日志格式化类也纳入本轮审查：
 
 | 层 | 类 |
 | --- | --- |
@@ -129,7 +138,7 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 | 输出 | `AlertAudio` `VehicleOverlayView` `AdasLogFormat` |
 | 编排 | `MainActivity` `AdasSimulator` `VehicleDetector` |
 
-配套：`app/src/test/java/com/hct/adas/` 当前 15 个测试类、147 个 `@Test` 方法，另有 `UsbCameraSourceTest` 等本轮契约测试；`AndroidManifest.xml`、`activity_main.xml`、`strings.xml`、`app/build.gradle`。本轮不以工作区构建产物作为新鲜验证证据。
+配套：`app/src/test/java/com/hct/adas/` 当前 21 个测试类、238 个 `@Test` 方法；另有 `UsbCameraSourceTest`、固定参考带、视觉保持和声音优先级相关用例。审查同时覆盖 `AndroidManifest.xml`、`activity_main.xml`、`dialog_adas_settings.xml`、`strings.xml`、音频 WAV 资源和 `app/build.gradle`。
 
 ### 1.2 构建产物与源码同源校验
 
@@ -165,10 +174,10 @@ rev.3 之后新增 3 个提交，对本报告的影响：
 
 ### 1.3 审查边界
 
-- Gradle focused suite 仍受环境 loopback 错误阻断；历史临时 `javac + JUnit` harness 曾执行的 106 个纯 Java 用例全部通过，其中包含几何 26 项。本轮未重新执行；USB 契约测试仍只作源码/API 静态核对，未在 Android classpath 下重跑
-- 未做设备/实车验证（P1-2 的 USB 广播可达性因测试机预授权而未被走到，已在代码与报告中留档限定条件）
+- 本轮未重复执行 Gradle/JUnit 全量套件；用户已提供 `:app:compileDebugJavaWithJavac --no-daemon` 成功记录。历史临时 `javac + JUnit` harness 曾执行的 106 个纯 Java 用例全部通过，其中包含几何 26 项；USB 契约测试仍只作源码/API 静态核对，未在 Android classpath 下重跑
+- 用户已确认权限、室内模拟、设置弹窗和声音开关；真实 UVC 故障注入、音频通道/声压、测距精度、道路误报漏报和长稳仍未由本轮覆盖
 - 早期记录未审查 `libusbcamera.aar` 内部实现；2026-09-19 本轮已静态核验控制块克隆、关闭和 monitor 移除的关键字节码，未验证 native 运行行为
-- 本报告不修改任何代码与既有文档
+- 本轮不修改 Java/XML 生产代码；本报告及相关产品文档已同步到当前基线
 
 ---
 
@@ -239,12 +248,12 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 | `AlertAudio.status()` 新判定 | `allSamplesLoaded()` 覆盖四个 wav；`playbackFailed` 仍作为独立降级路径保留 |
 | `FrameDispatcher.await()` 重载选择 | 纳秒余数 >0 → `wait(ms, ns)`；=0 → `wait(ms)`。语义正确，误改会立刻破坏行为 |
 | `fitPreview()` 缓存 | `appliedScaleX/Y` 在视图尺寸变化时自然失配并重算（`onLayoutChange` 与 metrics tick 都会调用），不会卡住旧矩阵 |
-| `reloadCalibrationForCamera()`（历史 rev.5） | 当时仅在 camera id 非空时动作；未知 id 直接返回，瞬时断连不会误清标定。当前工作区已改为：摄像头实际打开但无稳定 serial 时清除米制标定 |
+| `reloadCalibrationForCamera()`（历史 rev.5） | 历史实现按 camera id/serial 重载并在无身份时清除标定；该方法已从当前代码移除。当前由 `reloadCalibration()` 载入按图像宽高保存的配置 |
 | 资源引用完整性 | 24 个字符串定义、23 个 Java 引用 + `app_name`（manifest）、布局引用全部有定义，无未使用项 |
 | 向导俯仰输入 | 校验在 `fromWizard` 之前抛出，越界时不会产生部分写入 |
 | 花括号平衡 / 空白 | 6 个改动文件全部通过，`git diff --check` 干净 |
 
-**唯一的行为变更**：P2-4 使"未记录相机 ID 的旧标定"失效一次。该取舍已确认接受（测试阶段无老用户），理由已随 `43161c0` 写入代码注释，详见第 6 节 P2-4。
+**历史 rev.5 的行为变更**：P2-4 曾使"未记录相机 ID 的旧标定"失效一次。该取舍已确认接受（测试阶段无老用户）；后续产品收口已移除该身份绑定路径，当前仅按图像宽高判断标定是否可用。
 
 ---
 
@@ -353,7 +362,7 @@ rev.5 对 `ee79474`、`8b733a0`、`c6c1b46` 三个提交逐文件复核后，**P
 `w_norm = W·f_x·sin(α+β)/(H·cosβ)`，`β = atan((y-c_y)/f_y)`；目标测距使用 `Z_ground=H/tan(α+β)`，横向米制值使用
 `Z_axis=H·cosβ/sin(α+β)` 和 `X=(x-0.5)·Z_axis/f_x`。发布的米制偏移先除以近端观测宽度再乘物理车道宽，车辆在车道中心右侧为正。曲率拟合 `X=aZ_ground²+bZ_ground+c` 后使用
 `R=(1+(2aZ_ground+b)²)^1.5/(2a)`，负值为 Left，正值为 Right；`|a|<1e-4` 显式表示已知直行。
-`LaneGeometryTest` 现在包含不复用生产函数的世界点投影/横向校验（显式使用相机 pitch 旋转、`Z_ground=H/tan(α+β)`、`Z_axis=H·cosβ/sin(α+β)` 和 `x=0.5+f_xX/Z_axis`）、偏移符号和曲率方向断言；历史临时 `javac + JUnit` harness 的 26 项几何/车道用例曾通过，本轮未重新执行，Gradle 仍受 loopback 环境错误阻断。
+`LaneGeometryTest` 现在包含不复用生产函数的世界点投影/横向校验（显式使用相机 pitch 旋转、`Z_ground=H/tan(α+β)`、`Z_axis=H·cosβ/sin(α+β)` 和 `x=0.5+f_xX/Z_axis`）、偏移符号和曲率方向断言；历史临时 `javac + JUnit` harness 的 26 项几何/车道用例曾通过。本轮未重复执行 Gradle/JUnit 全量套件，用户已提供 Java 编译成功记录。
 
 ---
 
@@ -573,15 +582,15 @@ CameraCalibration.fromWizard(width, height, heightMeters, hfov, initialPitch);
 >
 > 历史口径：rev.4 时为 8 组待处理（P2-2、P2-4、P2-5、P2-6 剩余、P2-7、P2-8、P2-9、P2-11）。
 
-历史 P2 编号保持原样用于追溯；当前工作区另有一组未提交的健壮性加固：
+历史 P2 编号保持原样用于追溯；以下健壮性加固均已合并到当前基线 `bff24dd`：
 
 - `AlertAudio` 高优先级播放会停止低优先级 SoundPool 流和 ToneGenerator，`stop()` 同时清理优先级锁。
 - `MainActivity` 对 LiteRT 运行时异常使用有界指数退避；车速链路要求 FINE，COARSE 不再被当作有效车速来源。
-- `UsbCameraSource` 覆盖 opening/stream watchdog、SurfaceTexture 单次释放、serial 身份和 MJPEG/YUYV 候选协商。
+- `UsbCameraSource` 覆盖 opening/stream watchdog、SurfaceTexture 单次释放和 MJPEG/YUYV 候选协商；历史 serial 身份策略已移除，标定按图像宽高绑定。
 - `LaneDepartureDetector` 使用跨帧位置连续性抑制同侧亮线竞争；`LeadVehicleMotionEstimator` 在 `LOST`/重获时清除速度历史。
 
-上述加固均未在本轮运行 Gradle、真机或实车验证，不能把静态契约测试统计当成通过证据。
-代理曾用 `javac + JUnit` 独立验证车道 12、运动 4、跟踪 19、USB 契约 5 个重点用例；Gradle 启动因环境 `Unable to establish loopback connection` 未完成。
+上述加固未在本轮重复运行 Gradle/JUnit 全量套件，不能把静态契约测试统计当成全量通过证据；用户已确认 Java 编译、权限、室内模拟、设置和声音开关。
+代理曾用 `javac + JUnit` 独立验证车道 12、运动 4、跟踪 19、USB 契约 5 个重点用例；真实 UVC、音频通道和道路行为仍需单独验收。
 
 ### P2-1 `VehicleOverlayView` 重复且未使用的 import —— ✅ rev.3 已闭环
 
@@ -610,7 +619,9 @@ public synchronized void discardPending() {
 
 **现场收益**：现在能直接区分"推理太慢挤爆队列"（丢帧涨）与"USB 反复断流"（作废涨）。
 
-### P2-4 死代码：摄像头身份校验未接线 —— ✅ rev.5 已闭环（`MainActivity` 部分随 `8b733a0`）
+### P2-4 死代码：摄像头身份校验未接线 —— ✅ rev.5 历史闭环记录（当前策略已简化）
+
+> 本节保留 rev.5 对 serial/cameraId 身份绑定的审查证据。该实现已在当前基线移除；当前 `CalibrationStore` 只保存图像宽高与标定参数，`MainActivity.reloadCalibration()` 负责载入分辨率匹配的配置。
 
 | 成员 | 定义处 | rev.5 状态 |
 | --- | --- | --- |
@@ -620,7 +631,7 @@ public synchronized void discardPending() {
 
 **原问题（代码根因）**：`load(expectedCameraId)` 仅在 stored ID 非空时比对（第 51-59 行），从未写入过 ID 的历史标定被无条件放行；且 `MainActivity` 在 `onCreate` 走的是无参 `loadStatus()`，身份校验 API 实际从未被调用。
 
-**rev.5 处理**：新增 `MainActivity.reloadCalibrationForCamera()`，在摄像头**实际打开后**按当前 camera id 重新装载标定、状态与进度：
+**rev.5 历史处理**：当时新增 `MainActivity.reloadCalibrationForCamera()`，在摄像头**实际打开后**按当前 camera id 重新装载标定、状态与进度：
 
 - 有匹配标定 → 装载
 - 无匹配且**存有 ID** → 判定换摄像头，失效旧标定
@@ -694,7 +705,7 @@ public synchronized void discardPending() {
 | P0-1 延迟收口 | 🔶 等实测日志 |
 | 守卫阈值 / 收敛门槛实车标定 | ⏳ 需真实车道帧 |
 
-P2-4 附带的行为变更已确认接受（测试阶段无老用户），不再列为待确认项——理由随 `43161c0` 写入 `CalibrationStore` 与 `reloadCalibrationForCamera()` 的注释。
+P2-4 的历史行为变更已确认接受（测试阶段无老用户），不再列为待确认项；当前基线已移除 serial/cameraId 绑定，标定按图像宽高校验。
 
 P1-2（USB 广播可达性）因测试机按包名预授权而在本项目内关闭；代码注释已写明该结论绑定设备策略，换设备或转为正常分发时须重新验证。
 
@@ -712,13 +723,13 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 | --- | --- | --- |
 | 1 | `FCW_CONFIRM_MILLIS=400` 且"未参与判定" | 改为 200 且已参与，并写明"连续 3 个分析帧且跨度 ≥200 ms" |
 | 2 | "速度 ≥45 km/h 时普通提醒为 THW≤1.2 s 或 ≤8 m" | 改为 **15 km/h**，并补低速段与停车段行为 |
-| 3 | "9 个 JVM 测试类、约 75 个方法" | 历史版本曾同步为 10 类 / 81 方法；当前工作区已增至 **15 类 / 147 个 `@Test` 方法**，本轮未执行 |
+| 3 | "9 个 JVM 测试类、约 75 个方法" | 历史版本曾同步为 10 类 / 81 方法；rev.7 工作区为 15 类 / 147 个方法；当前代码已增至 **21 类 / 238 个 `@Test` 方法** |
 | 4 | "`USBMonitor.openDevice()` 原始控制块当前未保存" | 已改写 |
 | 5 | "LiteRT 连续 3 次异常…没有退避" | 已改写 |
 
 同时同步了性能基线（31 FPS 采集、推理计时口径）与新增的 ROI 守卫说明。
 
-> **当前同步**：历史记录中的 81 是 rev.4/rev.5 时点；当前工作区静态扫描为 15 个测试类、147 个 `@Test` 方法，不能据此声称 Gradle 测试通过。
+> **当前同步**：81、147 是历史时点统计；当前代码静态扫描为 21 个测试类、238 个 `@Test` 方法。本轮未重复执行 Gradle/JUnit，不能据此声称全量测试通过。
 
 ### 7.2 归因（历史记录）
 
@@ -728,7 +739,7 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 
 - 无 Android instrumented 测试
 - 无真实 NV21 车道帧测试（`LaneDepartureDetectorTest` 用合成图；`AdasSimulator` 直接注入可用 Observation，两者不能互证）
-- 无 Android instrumented UVC 热插拔、LiteRT 真模型、音频出声、Activity 重建测试；新增的 `UsbCameraSourceTest` 只验证纯 Java 的候选格式、serial 身份和 SurfaceTexture 返回契约
+- 无 Android instrumented UVC 热插拔、LiteRT 真模型、音频出声、Activity 重建测试；新增的 `UsbCameraSourceTest` 只验证纯 Java 的候选格式和 SurfaceTexture 返回契约，serial 身份用例属于历史 rev.5 记录
 - 新增的 `LaneDepartureDetectorTest` 与 `LeadVehicleMotionEstimatorTest` 覆盖同侧竞争、缺端点样本和 `LOST` 重获速度重置，但仍不能替代真实 NV21/道路遮挡验证
 - ~~无端到端延迟测量~~ —— **rev.6/rev.7 已补**：真机 `Age` 31 条 + 分段 `Split=` 11 条 + FCW 场景日志。管线处理 78.5 ms、排队 0、测量段 ≈180 ms、确认段 ≈400 ms、端到端 ≈580 ms
 - 无"低速蠕行 HMW 行为"与"目标切换冷却"的显式用例（原 P0-1、原 P1-4 的定性分歧即源于缺少这类把产品意图写进测试的用例）
@@ -741,11 +752,11 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 
 ---
 
-## 8. 建议处理顺序（rev.7 历史 + 2026-09-18 工作区）
+## 8. 建议处理顺序（rev.7 历史 + 当前收口状态）
 
 **代码侧可立即处理的项已全部清零，且唯一剩下的 P0 经实测后判定为"不改代码"。**
 
-这句话仅描述 rev.7 历史基线。当前未提交工作区已针对同侧车道竞争、`LOST` 重获速度污染、LiteRT 运行时重启、USB 生命周期/协商、精确定位权限和报警音抢占加固；剩余工作是重新验证几何投影、运行验证与参数验收，不应再沿用“源码没有这些保护”的旧风险描述。
+这句话仅描述 rev.7 历史基线。相关加固已合并到 `bff24dd`，并扩展到固定参考带、声音开关和设置交互；剩余工作是设备/道路验收记录，不应再沿用“源码没有这些保护”的旧风险描述。
 
 | 序 | 项 | 阻塞于 | 说明 |
 | --- | --- | --- | --- |
@@ -786,7 +797,7 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 4. **LiteRT 运行时异常**：注入模型调用异常，确认 5/10/20/40 s 退避、解释器释放和消费线程不会快速重启打满 CPU
 5. **定位权限**：仅授予 COARSE 时确认界面提示需要 FINE 且车速链路保持失效；授予 FINE 后再验证新鲜度、质量和加速度门控
 6. **音频抢占**：先播放低优先级 HMW/LDW，再触发 FCW/HMW_CRITICAL，确认旧 SoundPool 流和 ToneGenerator 立即停止
-7. **换摄像头后的标定失效行为**：用两台同分辨率 USB 摄像头交替接入，确认第二次接入时旧标定被失效并提示重新标定（`reloadCalibrationForCamera`）—— 对应 P2-4
+7. **分辨率变化后的标定门控**：用不同分辨率启动摄像头，确认当前标定被判定为不可用并提示重新执行双线校准；同分辨率更换摄像头不做 serial 自动识别——对应当前分辨率绑定策略。旧的两台同分辨率摄像头身份失效测试仅属于 rev.5 历史记录
 8. 破坏一个 `alerts/*.wav` 后启动，确认 UI 出现"报警音不可用"而不是仍显示 READY —— 对应 P2-2
 9. 长稳运行 30 min，记录分析率与漏报（车机常亮，无需专项息屏测试）—— 对应 P2-8 的关闭前提
 10. 逐一尝试 1280×720、640×480、1920×1080 和 YUYV 候选，记录 AAR 实际接受格式及 NV21 尺寸校验；确认降级时叠加层不绘制错位车道
@@ -856,8 +867,8 @@ rev.1/rev.2 列出的 5 处文档偏差已在 `6599789` 中随两份文档一并
 | **延迟仪表用采集时间戳** | `MainActivity:694-713` | `Age` 基于 `result.timestampNanos()`（UVC 采集时刻），因此覆盖采样节流 + 预处理 + 推理；`Confirm` 由 `[DANGER-START]` 边沿起算，目标切换与分析重置均重新武装，不会跨目标继承 |
 | **同侧亮线连续性门控** | `LaneDepartureDetector:307-417` | 热启动使用上一帧位置窗口与位置惩罚；亮度只作候选证据，仍需真实道路竞争验证 |
 | **LOST 重获速度清理** | `LeadVehicleMotionEstimator:19-75` | `LOST`/ID 变化/时间间隔异常时不沿用旧速度，下一有效帧从零开始估计 |
-| **USB 与音频加固** | `UsbCameraSource` / `AlertAudio` | SurfaceTexture 单次释放、opening/stream watchdog、serial 绑定、多格式候选；高优先级音频主动停止低优先级流 |
+| **USB 与音频加固** | `UsbCameraSource` / `AlertAudio` | SurfaceTexture 单次释放、opening/stream watchdog、多格式候选；标定按图像宽高绑定；高优先级音频主动停止低优先级流 |
 
 ---
 
-*报告主体保留 rev.1→rev.7 的历史审查记录；当前工作区同步截至 2026-09-18，未提交、未构建、未做设备或实车验证。历史行号只用于追溯，当前加固摘要以第 0.4 节和附录 B 为准。*
+*报告主体保留 rev.1→rev.7 的历史审查记录；当前工作区同步截至 2026-09-21，代码已提交并与远端同步。用户已确认编译、权限、室内模拟、设置弹窗和声音开关；长稳、声压、测距精度及道路误报漏报仍需独立验收。历史行号只用于追溯，当前收口摘要以本报告顶部“当前产品状态”和附录 B 为准。*
