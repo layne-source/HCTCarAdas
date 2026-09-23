@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HCT ADAS</string>
+    <string name="app_name">ADAS</string>
     <string name="app_bootstrap_status">USB 카메라 대기 중</string>
     <string name="camera_attached">USB 카메라가 감지되었습니다. 권한 또는 미리보기 대기 중</string>
     <string name="camera_opened">USB 카메라가 열렸습니다</string>

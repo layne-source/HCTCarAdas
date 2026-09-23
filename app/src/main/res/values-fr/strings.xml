@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HCT ADAS</string>
+    <string name="app_name">ADAS</string>
     <string name="app_bootstrap_status">En attente de la caméra USB</string>
     <string name="camera_attached">Caméra USB détectée ; autorisation ou aperçu en attente</string>
     <string name="camera_opened">Caméra USB ouverte</string>

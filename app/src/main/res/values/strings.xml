@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HCT ADAS</string>
+    <string name="app_name">ADAS</string>
     <string name="app_bootstrap_status">Waiting for USB camera</string>
     <string name="camera_attached">USB camera detected; waiting for permission or preview</string>
     <string name="camera_opened">USB camera opened</string>
