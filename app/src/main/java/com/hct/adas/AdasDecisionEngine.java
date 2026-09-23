@@ -1,7 +1,9 @@
 package com.hct.adas;
 
 import java.util.EnumSet;
+import java.util.Locale;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /** Deterministic FCW, HMW, LDW and LVSA decision state machine. */
 public final class AdasDecisionEngine {
@@ -68,6 +70,7 @@ public final class AdasDecisionEngine {
     private static final double LVSA_MAX_STATIONARY_CLOSING_SPEED_MPS = 0.75;
     private static final double LVSA_DISTANCE_STABILITY_TOLERANCE_METERS = 0.35;
     private static final double LVSA_AREA_STABILITY_TOLERANCE_RATIO = 0.08;
+    private static final long LVSA_DIAGNOSTIC_INTERVAL_MILLIS = 1_000L;
     private static final double LDW_MIN_SPEED_KMH = 50.0;
     private static final double LDW_OFFSET = 0.12;
     private static final double LDW_CONFIDENCE = 0.35;
@@ -87,6 +90,20 @@ public final class AdasDecisionEngine {
     private Long targetLostSinceMillis;
     private Long laneDepartureSince;
     private long ldwCooldownUntil;
+
+    // Diagnostics are optional and never participate in alert decisions or cooldowns.
+    private final Consumer<String> lvsaDiagnosticLogger;
+    private Observation lastLvsaObservation;
+    private String lastLvsaDiagnosticReason;
+    private long lastLvsaDiagnosticMillis;
+
+    public AdasDecisionEngine() {
+        this(null);
+    }
+
+    public AdasDecisionEngine(Consumer<String> lvsaDiagnosticLogger) {
+        this.lvsaDiagnosticLogger = lvsaDiagnosticLogger;
+    }
 
     public Decision update(Observation observation) {
         return update(observation, null);
@@ -193,10 +210,15 @@ public final class AdasDecisionEngine {
     }
 
     private void updateStationaryState(Observation observation, EnumSet<Alert> events) {
+        if (lvsaDiagnosticLogger != null) {
+            lastLvsaObservation = observation;
+        }
         // 1. Ego vehicle motion check: immediate reset if ego moves or speed invalid
         if (!Double.isFinite(observation.egoSpeedKmh())
                 || observation.egoSpeedKmh() < 0.0
                 || observation.egoSpeedKmh() > LVSA_MAX_STATIONARY_SPEED_KMH) {
+            traceLvsa(Double.isFinite(observation.egoSpeedKmh()) && observation.egoSpeedKmh() >= 0.0
+                    ? "EGO_MOVING" : "SPEED_INVALID", observation, stationarySince != null);
             clearStationaryState();
             return;
         }
@@ -207,7 +229,10 @@ public final class AdasDecisionEngine {
                 targetLostSinceMillis = observation.timestampMillis();
             }
             if (observation.timestampMillis() - targetLostSinceMillis > LVSA_MAX_LOST_MILLIS) {
+                traceLvsa("TARGET_LOST_TIMEOUT", observation, true);
                 clearStationaryState();
+            } else {
+                traceLvsa("TARGET_UNAVAILABLE", observation, false);
             }
             return;
         }
@@ -215,7 +240,11 @@ public final class AdasDecisionEngine {
         // before clearing the loss timestamp, even when the tracker kept the same target ID.
         if (targetLostSinceMillis != null
                 && observation.timestampMillis() - targetLostSinceMillis > LVSA_MAX_LOST_MILLIS) {
+            traceLvsa("RECOVERY_TOO_LATE", observation, true);
             clearStationaryState();
+        }
+        if (targetLostSinceMillis != null) {
+            traceLvsa("TARGET_RECOVERED", observation, true);
         }
         targetLostSinceMillis = null;
 
@@ -224,6 +253,7 @@ public final class AdasDecisionEngine {
                 && Double.isFinite(observation.closingSpeedMps())
                 && observation.distanceMeters() > 0.0 && observation.targetAreaPixels() > 0.0;
         if (!validData) {
+            traceLvsa("INVALID_MEASUREMENT", observation, stationarySince != null);
             clearStationaryState();
             return;
         }
@@ -231,6 +261,9 @@ public final class AdasDecisionEngine {
             if (stationaryDistance - observation.distanceMeters() > LVSA_DISTANCE_STABILITY_TOLERANCE_METERS
                     || (observation.targetAreaPixels() - stationaryArea) / stationaryArea
                     > LVSA_AREA_STABILITY_TOLERANCE_RATIO) {
+                traceLvsa(stationaryDistance - observation.distanceMeters()
+                        > LVSA_DISTANCE_STABILITY_TOLERANCE_METERS
+                        ? "ARMED_CANCEL_DISTANCE" : "ARMED_CANCEL_AREA", observation, true);
                 clearStationaryState();
                 return;
             }
@@ -241,13 +274,20 @@ public final class AdasDecisionEngine {
                     >= LVSA_AREA_DROP_RATIO;
             if (targetMoved || targetShrank) {
                 stationaryMovementFrames++;
+                traceLvsa(targetMoved && targetShrank ? "MOVEMENT_DISTANCE_AND_AREA"
+                        : targetMoved ? "MOVEMENT_DISTANCE" : "MOVEMENT_AREA", observation, true);
             } else {
+                traceLvsa(stationaryMovementFrames > 0 ? "MOVEMENT_BROKEN" : "ARMED_MONITOR",
+                        observation, stationaryMovementFrames > 0);
                 stationaryMovementFrames = 0;
             }
             if (stationaryMovementFrames >= LVSA_REQUIRED_MOVEMENT_FRAMES) {
                 if (observation.timestampMillis() >= lvsaCooldownUntil) {
                     events.add(Alert.LVSA);
+                    traceLvsa("TRIGGER", observation, true);
                     lvsaCooldownUntil = observation.timestampMillis() + LVSA_COOLDOWN_MILLIS;
+                } else {
+                    traceLvsa("COOLDOWN_SUPPRESSED", observation, true);
                 }
                 // Consume departures suppressed by cooldown too; never replay them later.
                 clearStationaryState();
@@ -261,6 +301,8 @@ public final class AdasDecisionEngine {
                 && observation.distanceMeters() >= LVSA_MIN_DISTANCE_METERS
                 && observation.distanceMeters() <= LVSA_MAX_DISTANCE_METERS;
         if (!stationaryTarget) {
+            traceLvsa(Math.abs(observation.closingSpeedMps()) > LVSA_MAX_STATIONARY_CLOSING_SPEED_MPS
+                    ? "RELATIVE_MOTION" : "DISTANCE_OUT_OF_RANGE", observation, stationarySince != null);
             clearStationaryState();
             return;
         }
@@ -270,6 +312,7 @@ public final class AdasDecisionEngine {
             stationaryDistance = observation.distanceMeters();
             stationaryArea = observation.targetAreaPixels();
             stationaryMovementFrames = 0;
+            traceLvsa("WAIT_START", observation, true);
             return;
         }
 
@@ -279,6 +322,8 @@ public final class AdasDecisionEngine {
                 && Math.abs(observation.targetAreaPixels() - stationaryArea) / stationaryArea
                 <= LVSA_AREA_STABILITY_TOLERANCE_RATIO;
         if (!distanceStable || !areaStable) {
+            // Log the previous baseline before replacing it, so a restart is explainable.
+            traceLvsa(!distanceStable ? "WAIT_RESTART_DISTANCE" : "WAIT_RESTART_AREA", observation, true);
             stationarySince = observation.timestampMillis();
             stationaryDistance = observation.distanceMeters();
             stationaryArea = observation.targetAreaPixels();
@@ -288,6 +333,46 @@ public final class AdasDecisionEngine {
         if (observation.timestampMillis() - stationarySince >= LVSA_WAIT_MILLIS) {
             stationaryArmed = true;
             stationaryMovementFrames = 0;
+            traceLvsa("WAIT_READY", observation, true);
+        } else {
+            traceLvsa("WAITING", observation, false);
+        }
+    }
+
+    /** Resets are logged before mutation; wait/armed progress is logged after mutation. */
+    private void traceLvsa(String reason, Observation observation, boolean event) {
+        if (lvsaDiagnosticLogger == null || observation == null) {
+            return;
+        }
+        long now = observation.timestampMillis();
+        if (!event && reason.equals(lastLvsaDiagnosticReason)
+                && ("EGO_MOVING".equals(reason)
+                || (now >= lastLvsaDiagnosticMillis
+                && now - lastLvsaDiagnosticMillis < LVSA_DIAGNOSTIC_INTERVAL_MILLIS))) {
+            return;
+        }
+        lastLvsaDiagnosticReason = reason;
+        lastLvsaDiagnosticMillis = now;
+        boolean waiting = stationarySince != null;
+        double baseDistance = waiting ? stationaryDistance : Double.NaN;
+        double baseArea = waiting ? stationaryArea : Double.NaN;
+        double areaDropPercent = baseArea > 0.0
+                ? (baseArea - observation.targetAreaPixels()) / baseArea * 100.0 : Double.NaN;
+        try {
+            lvsaDiagnosticLogger.accept(String.format(Locale.ROOT,
+                    "reason=%s state=%s sampleMs=%d waitMs=%d speed=%.2f visible=%s"
+                            + " D=%.3f baseD=%.3f deltaD=%+.3f A=%.1f baseA=%.1f areaDrop=%+.2f%%"
+                            + " vc=%+.3f move=%d/%d lostMs=%d cooldownMs=%d",
+                    reason, stationaryArmed ? "ARMED" : waiting ? "WAITING" : "IDLE",
+                    now, waiting ? now - stationarySince : 0L, observation.egoSpeedKmh(),
+                    observation.targetVisible(), observation.distanceMeters(), baseDistance,
+                    observation.distanceMeters() - baseDistance, observation.targetAreaPixels(), baseArea,
+                    areaDropPercent, observation.closingSpeedMps(), stationaryMovementFrames,
+                    LVSA_REQUIRED_MOVEMENT_FRAMES,
+                    targetLostSinceMillis == null ? 0L : now - targetLostSinceMillis,
+                    Math.max(0L, lvsaCooldownUntil - now)));
+        } catch (RuntimeException ignored) {
+            // A diagnostic sink failure must not change or interrupt safety decisions.
         }
     }
 
@@ -324,6 +409,11 @@ public final class AdasDecisionEngine {
         return warning;
     }
     public void resetTargetState() {
+        if (stationarySince != null || targetLostSinceMillis != null) {
+            traceLvsa("RESET_TARGET", lastLvsaObservation, true);
+        }
+        lastLvsaObservation = null;
+        lastLvsaDiagnosticReason = null;
         dangerousFrames = 0;
         dangerSinceMillis = null;
         clearStationaryState();

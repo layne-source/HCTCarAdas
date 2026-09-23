@@ -59,6 +59,7 @@ public final class MainActivity extends Activity {
     private static final double HEIGHT_SUV_METERS = 1.55;
     private static final double HEIGHT_TRUCK_METERS = 2.00;
     private static final double MAX_SPEED_ACCELERATION_MPS2 = 15.0;
+    private static final long LVSA_INPUT_LOG_INTERVAL_NANOS = 1_000_000_000L;
     private FrameDispatcher frameDispatcher;
     private FrameConsumer frameConsumer;
     private volatile RuntimeException initializationFailure;
@@ -93,7 +94,7 @@ public final class MainActivity extends Activity {
     private final LaneDepartureDetector laneDetector = new LaneDepartureDetector();
     /** Last lane measurement, kept so the overlay can fade a dropped lane instead of blinking. */
     private LaneGeometry.LaneSnapshot heldLaneGeometry = LaneGeometry.LaneSnapshot.INVALID;
-    private final AdasDecisionEngine decisionEngine = new AdasDecisionEngine();
+    private final AdasDecisionEngine decisionEngine = new AdasDecisionEngine(this::logLvsaDiagnostic);
     private AlertAudio alertAudio;
     private AlertPreferences alertPreferences;
     private LocationManager locationManager;
@@ -117,12 +118,18 @@ public final class MainActivity extends Activity {
 
     private long lastHeartbeatLogNanos;
     private long lastLaneLogNanos;
+    private LeadVehicleMotionEstimator.Rejection lastMotionRejection;
+    private long lastMotionLogTargetId;
+    private long lastMotionLogNanos;
+    private String lastSpeedSampleReason;
+    private long lastSpeedSampleLogNanos;
+    private String lastAnalysisResetReason;
+    private long lastAnalysisResetLogNanos;
     /**
-     * Whether the per-second lane sampling dump is emitted. {@code Log.isLoggable} lets an installer
-     * turn it on with {@code adb shell setprop log.tag.HctAdasCore DEBUG} without a rebuild; by default
-     * it stays off so a normal drive is not flooded.
+     * Whether routine diagnostics are emitted. The same switch covers all core activity, LVSA,
+     * calibration and tracker sampling logs; warnings and errors remain visible by default.
      */
-    private final boolean laneSamplingLogging = Log.isLoggable(TAG, Log.DEBUG);
+    private final boolean diagnosticLogging = Log.isLoggable(TAG, Log.DEBUG);
     private LeadVehicleTracker.State previousTrackingState = LeadVehicleTracker.State.NONE;
     private long previousTargetId = 0L;
     private long previousDecisionTargetId;
@@ -296,7 +303,7 @@ public final class MainActivity extends Activity {
                     }
                     if (System.nanoTime() - result.timestampNanos()
                             > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
-                        resetAnalysisState();
+                        resetAnalysisState("STALE_INFERENCE_RESULT", result.timestampNanos());
                         return;
                     }
                     if (result.timestampNanos() <= previousProcessedTimestampNanos) {
@@ -305,7 +312,7 @@ public final class MainActivity extends Activity {
                     if (previousProcessedTimestampNanos > 0L
                             && result.timestampNanos() - previousProcessedTimestampNanos
                             > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
-                        resetAnalysisState();
+                        resetAnalysisState("OBSERVATION_GAP", result.timestampNanos());
                     }
                     LaneDepartureDetector.Observation lane =
                             AdasCalibrationMode.effectiveLaneObservation(
@@ -381,7 +388,7 @@ public final class MainActivity extends Activity {
         }
         if (resetResults) {
             hideCalibrationOverlay();
-            clearResults();
+            clearResults("CAMERA_RESET");
         }
         setStatusText(text, true);
     }
@@ -415,7 +422,7 @@ public final class MainActivity extends Activity {
         super.onStart();
         synchronized (this) {
             started = true;
-            clearResults();
+            clearResults("ACTIVITY_START");
         }
         updateCameraStatus(getString(R.string.app_bootstrap_status), false);
         previousMetricsTime = System.nanoTime();
@@ -566,6 +573,9 @@ public final class MainActivity extends Activity {
 
     /** Diagnostic calibration heartbeat; the lightweight profile has no online lane-learning phase. */
     private void logCalibrationHeartbeat() {
+        if (!diagnosticLogging) {
+            return;
+        }
         if (!AdasCalibrationMode.LDW_ENABLED) {
             return;
         }
@@ -588,7 +598,7 @@ public final class MainActivity extends Activity {
 
     /** One lane sampling dump per second while the installer has enabled verbose logging. */
     private void logLaneSampling(LaneDepartureDetector.Observation lane) {
-        if (!laneSamplingLogging) {
+        if (!diagnosticLogging) {
             return;
         }
         long now = System.nanoTime();
@@ -599,11 +609,101 @@ public final class MainActivity extends Activity {
         Log.d(TAG, AdasLogFormat.laneSampling(lane));
     }
 
+    private void logLvsaDiagnostic(String message) {
+        if (!diagnosticLogging) {
+            return;
+        }
+        Log.i(TAG, "[LVSA] Target=#" + previousDecisionTargetId + " " + message);
+    }
+
+    /** Observe the estimator's actual rejection branch; do not re-run measurement decisions. */
+    private void logLvsaInput(VehicleDetector.Result result, LeadVehicleTracker.Snapshot tracking,
+                              LeadVehicleMotionEstimator.Measurement motion,
+                              CameraCalibration activeCalibration, boolean simulationFrame) {
+        if (!diagnosticLogging) {
+            return;
+        }
+        long now = System.nanoTime();
+        LeadVehicleMotionEstimator.Rejection rejection = motionEstimator.lastRejection();
+        if (rejection == lastMotionRejection && tracking.trackId() == lastMotionLogTargetId
+                && now - lastMotionLogNanos < LVSA_INPUT_LOG_INTERVAL_NANOS) {
+            return;
+        }
+        lastMotionRejection = rejection;
+        lastMotionLogTargetId = tracking.trackId();
+        lastMotionLogNanos = now;
+        try {
+            VehicleDetector.Detection box = tracking.detection();
+            CameraCalibration configured = calibration;
+            String boxDesc = box == null ? "NONE" : String.format(Locale.ROOT,
+                    "[%.4f,%.4f,%.4f,%.4f] conf=%.3f", box.left(), box.top(), box.right(),
+                    box.bottom(), box.confidence());
+            Log.i(TAG, String.format(Locale.ROOT,
+                    "[LVSA-INPUT] sampleMs=%d Target=#%d tracking=%s reason=%s visible=%s"
+                            + " frame=%dx%d calib=%s calibActive=%s calibSize=%dx%d"
+                            + " box=%s D=%.3f vc=%+.3f simulation=%s",
+                    result.timestampNanos() / 1_000_000L, tracking.trackId(), tracking.state(),
+                    rejection, motion.visible(), result.frameWidth(), result.frameHeight(),
+                    calibrationStatus, activeCalibration != null,
+                    configured == null ? 0 : configured.imageWidth(),
+                    configured == null ? 0 : configured.imageHeight(), boxDesc,
+                    motion.distanceMeters(), motion.closingSpeedMps(), simulationFrame));
+        } catch (RuntimeException ignored) {
+            // Diagnostics must not interrupt analysis.
+        }
+    }
+
+    /** Called by the one-second heartbeat; the decision still uses validSpeedKmh() unchanged. */
+    private synchronized void logLvsaSpeedStatus() {
+        if (!diagnosticLogging) {
+            return;
+        }
+        try {
+            long now = SystemClock.elapsedRealtimeNanos();
+            long ageMs = speedTimestampNanos == 0L ? -1L : (now - speedTimestampNanos) / 1_000_000L;
+            Log.i(TAG, String.format(Locale.ROOT,
+                    "[LVSA-SPEED] raw=%.3f ageMs=%d valid=%s permission=%s locationEnabled=%s"
+                            + " subscribed=%s simulation=%s",
+                    egoSpeedKmh, ageMs, validSpeedKmh(), hasFineLocationPermission(),
+                    locationEnabled(), locationUpdatesRequested, simulator.isRunning()));
+        } catch (RuntimeException ignored) {
+            // A diagnostic service query must not interrupt the UI heartbeat.
+        }
+    }
+
+    /** Repeated rejections are limited to one per second; acceptance is logged on recovery. */
+    private void logSpeedSample(String reason, Location location) {
+        if (!diagnosticLogging) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtimeNanos();
+        if (reason.equals(lastSpeedSampleReason) && ("ACCEPTED".equals(reason)
+                || now - lastSpeedSampleLogNanos < LVSA_INPUT_LOG_INTERVAL_NANOS)) {
+            return;
+        }
+        lastSpeedSampleReason = reason;
+        lastSpeedSampleLogNanos = now;
+        try {
+            Log.i(TAG, String.format(Locale.ROOT,
+                    "[LVSA-GPS] reason=%s provider=%s raw=%.3f accuracyM=%.1f"
+                            + " sampleAgeMs=%d retained=%.3f retainedAgeMs=%d sampleDeltaMs=%d",
+                    reason, location == null ? "NONE" : location.getProvider(),
+                    location == null || !location.hasSpeed() ? Double.NaN : location.getSpeed() * 3.6,
+                    location == null || !location.hasAccuracy() ? Double.NaN : location.getAccuracy(),
+                    location == null ? -1L : (now - location.getElapsedRealtimeNanos()) / 1_000_000L,
+                    egoSpeedKmh, speedTimestampNanos == 0L ? -1L : (now - speedTimestampNanos) / 1_000_000L,
+                    location == null || speedTimestampNanos == 0L ? -1L
+                            : (location.getElapsedRealtimeNanos() - speedTimestampNanos) / 1_000_000L));
+        } catch (RuntimeException ignored) {
+            // Diagnostics never affect acceptance of location samples.
+        }
+    }
+
     private void renderMetrics() {
         long now = System.nanoTime();
         long captured = cameraSource.capturedFrames();
         FrameConsumer.Metrics workerSnapshot = frameConsumer.metrics();
-        if (now - lastHeartbeatLogNanos >= 1_000_000_000L) {
+        if (diagnosticLogging && now - lastHeartbeatLogNanos >= 1_000_000_000L) {
             lastHeartbeatLogNanos = now;
             Analysis heartbeat = latestAnalysis;
             CameraCalibration heartbeatCalibration = calibration;
@@ -637,6 +737,7 @@ public final class MainActivity extends Activity {
                     heartbeat == null ? 0L : heartbeat.detections().timestampNanos(), now,
                     frameDispatcher.metrics(), cameraSource.invalidFrames(), workerSnapshot.failedFrames()));
             logCalibrationHeartbeat();
+            logLvsaSpeedStatus();
         }
         previousCaptured = captured;
         previousMetricsTime = now;
@@ -871,30 +972,38 @@ public final class MainActivity extends Activity {
             synchronized (MainActivity.this) {
                 if (!started || location == null || !location.hasSpeed()
                         || !Float.isFinite(location.getSpeed()) || location.getSpeed() < 0f) {
+                    logSpeedSample(!started ? "NOT_STARTED" : location == null ? "NO_LOCATION"
+                            : !location.hasSpeed() ? "NO_SPEED" : "INVALID_SPEED", location);
                     return;
                 }
                 if (location.hasAccuracy() && location.getAccuracy() > 50f) {
+                    logSpeedSample("POOR_ACCURACY", location);
                     return; // Reject poor GPS fix accuracy
                 }
                 double rawKmh = location.getSpeed() * 3.6;
                 if (rawKmh > 180.0) {
+                    logSpeedSample("SPEED_OUT_OF_RANGE", location);
                     return; // Reject unrealistic automotive speed
                 }
                 long measuredAt = location.getElapsedRealtimeNanos();
                 long now = SystemClock.elapsedRealtimeNanos();
                 if (measuredAt <= speedTimestampNanos || measuredAt > now
                         || now - measuredAt > 2_000_000_000L) {
+                    logSpeedSample(measuredAt <= speedTimestampNanos ? "OUT_OF_ORDER"
+                            : measuredAt > now ? "FUTURE_SAMPLE" : "STALE_SAMPLE", location);
                     return;
                 }
                 // Reject impossible acceleration spikes (> 15 m/s^2 ≈ 1.5g)
                 if (!isSpeedTransitionPlausible(egoSpeedKmh, speedTimestampNanos,
                         rawKmh, measuredAt)) {
+                    logSpeedSample("ACCELERATION_SPIKE", location);
                     return; // Spike/glitch rejected
                 }
                 double prevSpeed = egoSpeedKmh;
                 egoSpeedKmh = rawKmh;
                 speedTimestampNanos = measuredAt;
-                if (!Double.isFinite(prevSpeed)) {
+                logSpeedSample("ACCEPTED", location);
+                if (diagnosticLogging && !Double.isFinite(prevSpeed)) {
                     Log.i(TAG, String.format(Locale.ROOT, "[GPS] First speed fix received: %.1f km/h (provider=%s)",
                             egoSpeedKmh, location.getProvider()));
                 }
@@ -935,7 +1044,7 @@ public final class MainActivity extends Activity {
         }
         if (!simulationFrame && System.nanoTime() - result.timestampNanos()
                 > LeadVehicleTracker.MAX_OBSERVATION_GAP_NANOS) {
-            resetAnalysisState();
+            resetAnalysisState("STALE_ADAS_FRAME", result.timestampNanos());
             return;
         }
         if (result.timestampNanos() <= previousProcessedTimestampNanos) {
@@ -974,6 +1083,7 @@ public final class MainActivity extends Activity {
         }
         LeadVehicleMotionEstimator.Measurement motion = motionEstimator.update(
                 tracking, activeCalib, result.frameWidth(), result.frameHeight());
+        logLvsaInput(result, tracking, motion, activeCalib, simulationFrame);
         LaneGeometry.LaneSnapshot laneGeometry = laneSnapshot(lane, result.frameWidth(),
                 result.frameHeight(), result.timestampNanos());
 
@@ -981,6 +1091,9 @@ public final class MainActivity extends Activity {
                 || tracking.state() == LeadVehicleTracker.State.LOST);
         long decisionTargetId = hasTarget ? tracking.trackId() : 0L;
         if (decisionTargetId != previousDecisionTargetId) {
+            if (diagnosticLogging) {
+                Log.i(TAG, "[LVSA] TARGET_CHANGE #" + previousDecisionTargetId + " -> #" + decisionTargetId);
+            }
             decisionEngine.resetTargetState();
             previousDecisionTargetId = decisionTargetId;
             visualAlerts.clear();
@@ -1035,14 +1148,19 @@ public final class MainActivity extends Activity {
             }
         }
         if (tracking.state() != previousTrackingState || tracking.trackId() != previousTargetId) {
-            Log.i(TAG, String.format(Locale.ROOT,
-                    "[TRACKER] Target transition: %s(#%d) -> %s(#%d)",
-                    previousTrackingState, previousTargetId, tracking.state(), tracking.trackId()));
+            if (diagnosticLogging) {
+                Log.i(TAG, String.format(Locale.ROOT,
+                        "[TRACKER] Target transition: %s(#%d) -> %s(#%d)",
+                        previousTrackingState, previousTargetId, tracking.state(), tracking.trackId()));
+            }
             previousTrackingState = tracking.state();
             previousTargetId = tracking.trackId();
         }
         if (alertAudio != null) {
             alertAudio.play(decision.events());
+        } else if (!decision.events().isEmpty()) {
+            Log.w(TAG, "[ALERT-AUDIO] reason=AUDIO_UNAVAILABLE events=" + decision.events()
+                    + " Target=#" + decisionTargetId);
         }
         latestAnalysis = new Analysis(result, tracking, motion, lane, laneGeometry, decision, speed,
                 visualSpeedMeasuredAt,
@@ -1174,7 +1292,7 @@ public final class MainActivity extends Activity {
                 ? CalibrationStore.Status.WIZARD_COMPLETED : CalibrationStore.Status.CALIBRATED;
         calibrationProgress = calibrationStatus == CalibrationStore.Status.CALIBRATED ? 100 : 0;
         autoCalibrationLearner.reset(calibrationStatus);
-        clearResults();
+        clearResults("SIMULATION_START");
         overlayView.setCalibration(calibration, calibrationStatus);
 
         simulationButton.setText("模拟中 (点击停止)");
@@ -1212,7 +1330,7 @@ public final class MainActivity extends Activity {
         autoCalibrationLearner.reset(calibrationStatus);
         calibrationProgress = autoCalibrationLearner.progress();
         calibrationStore.saveStatus(calibrationStatus, calibrationProgress);
-        clearResults();
+        clearResults("SIMULATION_END");
         overlayView.setCalibration(calibration, calibrationStatus);
         simulationButton.setText("室内模拟测试");
         simulationButton.setBackgroundResource(R.drawable.hud_debug_button);
@@ -1421,7 +1539,7 @@ public final class MainActivity extends Activity {
                 : CalibrationStore.Status.DISTANCE_READY;
         calibrationProgress = next == null ? 0 : 100;
         autoCalibrationLearner.reset(calibrationStatus);
-        clearResults();
+        clearResults("CALIBRATION_CHANGED");
         if (next == null) {
             calibrationStore.clear();
         } else {
@@ -1513,14 +1631,27 @@ public final class MainActivity extends Activity {
         appliedScaleY = scaleY;
     }
 
-    private synchronized void clearResults() {
+    private synchronized void clearResults(String reason) {
         acceptFramesAfterNanos = System.nanoTime();
         resultsGeneration++;
-        resetAnalysisState();
+        resetAnalysisState(reason, 0L);
         overlayView.setResult(null, null);
     }
 
-    private synchronized void resetAnalysisState() {
+    private synchronized void resetAnalysisState(String reason, long incomingTimestampNanos) {
+        long now = System.nanoTime();
+        if (diagnosticLogging && (latestAnalysis != null || !reason.equals(lastAnalysisResetReason)
+                || now - lastAnalysisResetLogNanos >= LVSA_INPUT_LOG_INTERVAL_NANOS)) {
+            lastAnalysisResetReason = reason;
+            lastAnalysisResetLogNanos = now;
+            Log.i(TAG, "[LVSA] ANALYSIS_RESET reason=" + reason + " Target=#" + previousDecisionTargetId
+                    + " analysisAgeMs=" + (previousProcessedTimestampNanos == 0L ? -1L
+                            : elapsedMs(previousProcessedTimestampNanos, now))
+                    + " incomingAgeMs=" + (incomingTimestampNanos == 0L ? -1L
+                            : elapsedMs(incomingTimestampNanos, now))
+                    + " frameGapMs=" + (incomingTimestampNanos == 0L || previousProcessedTimestampNanos == 0L
+                            ? -1L : (incomingTimestampNanos - previousProcessedTimestampNanos) / 1_000_000L));
+        }
         if (alertAudio != null) {
             alertAudio.stop();
         }
@@ -1569,7 +1700,7 @@ public final class MainActivity extends Activity {
             started = false;
             simulator.stop();
             restoreSimulationState();
-            clearResults();
+            clearResults("ACTIVITY_STOP");
         }
         metricsHandler.removeCallbacks(metricsUpdater);
         stopLocationUpdates();

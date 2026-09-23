@@ -47,6 +47,10 @@ public final class AlertAudio implements AutoCloseable {
     private int activePriority = 0;
     private long priorityLockUntilNanos = 0L;
     private AdasDecisionEngine.Alert activeAlert;
+    // Diagnostics only; neither field participates in playback selection or priority locking.
+    private String lastPlaybackResult = "NOT_REQUESTED";
+    private String lastWavResult = "NOT_ATTEMPTED";
+    private final boolean diagnosticLogging = Log.isLoggable(TAG, Log.DEBUG);
 
     public AlertAudio(Context context) throws IOException {
         audioManager = context.getSystemService(AudioManager.class);
@@ -165,6 +169,13 @@ public final class AlertAudio implements AutoCloseable {
             // later sound-switch change stop this independent test stream.
             activeAlert = null;
         }
+        if (diagnosticLogging) {
+            Log.i(TAG, "speakerTest played=" + played + " reason=" + lastPlaybackResult
+                    + " wav=" + lastWavResult);
+        }
+        if (!played && "PLAYBACK_FAILED".equals(lastPlaybackResult)) {
+            Log.w(TAG, "Speaker test playback failed wav=" + lastWavResult);
+        }
         return played;
     }
 
@@ -172,6 +183,10 @@ public final class AlertAudio implements AutoCloseable {
     public synchronized void setAlertEnabled(AdasDecisionEngine.Alert alert, boolean enabled) {
         if (alert == null || alert == AdasDecisionEngine.Alert.LDW) {
             return;
+        }
+        if (diagnosticLogging) {
+            Log.i(TAG, "soundSetting alert=" + alert + " enabled=" + enabled
+                    + " stoppingActive=" + (!enabled && activeAlert == alert));
         }
         if (enabled) {
             disabledAlerts.remove(alert);
@@ -225,6 +240,11 @@ public final class AlertAudio implements AutoCloseable {
             fallbackTone = ToneGenerator.TONE_PROP_ACK;
             durationMillis = LVSA_PLAYBACK_MILLIS;
         } else {
+            if (diagnosticLogging) {
+                Log.i(TAG, "requested=" + alerts + " played=false reason=SOUND_DISABLED disabled="
+                        + disabledAlerts);
+            }
+            // Preserve the existing handled/skipped return value; no enabled sound was selected.
             return true;
         }
 
@@ -232,15 +252,26 @@ public final class AlertAudio implements AutoCloseable {
         if (played) {
             activeAlert = selectedAlert;
         }
-        Log.i(TAG, "alert=" + selectedAlert + " requested=" + alerts + " priority=" + priority
-                + " soundId=" + sound + " durationMs=" + durationMillis + " played=" + played);
+        if (!played && "PLAYBACK_FAILED".equals(lastPlaybackResult)) {
+            Log.w(TAG, "Alert playback failed alert=" + selectedAlert + " wav=" + lastWavResult);
+        }
+        if (diagnosticLogging) {
+            Log.i(TAG, "alert=" + selectedAlert + " requested=" + alerts + " priority=" + priority
+                    + " soundId=" + sound + " durationMs=" + durationMillis + " played=" + played
+                    + " reason=" + lastPlaybackResult + " wav=" + lastWavResult
+                    + " fallbackAvailable=" + (toneGenerator != null) + " disabled=" + disabledAlerts
+                    + " activeAlert=" + activeAlert + " activePriority=" + activePriority
+                    + " lockRemainingMs=" + Math.max(0L, priorityLockUntilNanos - System.nanoTime()) / 1_000_000L);
+        }
         return played;
     }
 
     /** Speaker tests and real events obey the same lock; failed playback never claims priority. */
     private boolean playPrioritized(int priority, int sound, int fallbackTone, int durationMillis) {
         long now = System.nanoTime();
+        lastWavResult = "NOT_ATTEMPTED";
         if (now < priorityLockUntilNanos && priority < activePriority) {
+            lastPlaybackResult = "PRIORITY_BLOCKED";
             return false;
         }
 
@@ -263,11 +294,15 @@ public final class AlertAudio implements AutoCloseable {
 
     private boolean playSound(int sound, int fallbackTone, int durationMillis) {
         if (closed || isMuted()) {
+            lastPlaybackResult = closed ? "CLOSED" : "MUTED";
             return false;
         }
+        lastWavResult = soundPool == null ? "UNAVAILABLE"
+                : pendingSounds.contains(sound) ? "LOADING" : "NOT_LOADED";
         if (soundPool != null && loadedSounds.contains(sound)) {
             try {
                 int stream = soundPool.play(sound, 1f, 1f, 1, 0, 1f);
+                lastWavResult = stream == 0 ? "STREAM_REJECTED" : "PLAYED";
                 if (stream != 0) {
                     // SoundPool supports at most four concurrent streams; bound our stop handles too.
                     if (playingStreams.size() == 4) {
@@ -280,9 +315,11 @@ public final class AlertAudio implements AutoCloseable {
                     }
                     playingStreams.addLast(stream);
                     playbackFailed = false;
+                    lastPlaybackResult = "WAV_PLAYED";
                     return true;
                 }
             } catch (RuntimeException failure) {
+                lastWavResult = "EXCEPTION";
                 Log.w(TAG, "SoundPool playback failed", failure);
             }
         }
@@ -290,6 +327,7 @@ public final class AlertAudio implements AutoCloseable {
             try {
                 if (toneGenerator.startTone(fallbackTone, durationMillis)) {
                     playbackFailed = false;
+                    lastPlaybackResult = "TONE_FALLBACK_PLAYED";
                     return true;
                 }
             } catch (RuntimeException failure) {
@@ -297,6 +335,7 @@ public final class AlertAudio implements AutoCloseable {
             }
         }
         playbackFailed = true;
+        lastPlaybackResult = "PLAYBACK_FAILED";
         return false;
     }
 

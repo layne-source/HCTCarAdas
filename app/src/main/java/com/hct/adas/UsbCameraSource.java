@@ -38,6 +38,7 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
     }
 
     private static final String TAG = "HctAdasCamera";
+    private final boolean diagnosticLogging = Log.isLoggable(TAG, Log.DEBUG);
     private static final long SAMPLE_INTERVAL_NANOS = 200_000_000L;
     private static final long FRAME_WATCHDOG_INTERVAL_MILLIS = 1_000L;
     private static final long FRAME_WATCHDOG_TIMEOUT_NANOS = 3_000_000_000L;
@@ -402,7 +403,9 @@ public final class UsbCameraSource implements AutoCloseable, TextureView.Surface
                 closeCamera();
                 return;
             }
-            Log.i(TAG, "Preview " + width + "x" + height + ", analysis sample rate=5 fps");
+            if (diagnosticLogging) {
+                Log.i(TAG, "Preview " + width + "x" + height + ", analysis sample rate=5 fps");
+            }
             mainHandler.post(() -> {
                 if (isCurrent(token)) {
                     previewStartedNanos = previewStart;

@@ -109,6 +109,7 @@ public final class AutoCalibrationLearner {
     /** Rejects a theoretical pitch that would push the ROI's near edge past the usable range. */
     static final double MAX_ROI_NEAR_DISTANCE_METERS = 40.0;
     private static final String TAG = "HctAdasCore";
+    private final boolean diagnosticLogging = Log.isLoggable(TAG, Log.DEBUG);
     private static final double PITCH_UPDATE_THRESHOLD_DEGREES = 0.05;
     /**
      * Consecutive geometric rejections after which the learner is treated as unable to converge at
@@ -259,7 +260,9 @@ public final class AutoCalibrationLearner {
             status = CalibrationStore.Status.CALIBRATING;
             // The window is already empty on this transition; clearing again would discard the very
             // sample that triggered it and cost one count.
-            Log.i(TAG, "[CALIB] Starting online calibration from lane width consistency");
+            if (diagnosticLogging) {
+                Log.i(TAG, "[CALIB] Starting online calibration from lane width consistency");
+            }
         }
 
         if (status == CalibrationStore.Status.CALIBRATING) {
@@ -273,8 +276,10 @@ public final class AutoCalibrationLearner {
             }
             progress = Math.min(99, (int) (samples.size() * 100.0 / REQUIRED_CONVERGENCE_SAMPLES));
             if (samples.size() % 15 == 0) {
-                Log.d(TAG, String.format(Locale.ROOT, "[CALIB] Progress %d%% (%d/%d), implied=%.2f deg",
-                        progress, samples.size(), REQUIRED_CONVERGENCE_SAMPLES, windowCentre));
+                if (diagnosticLogging) {
+                    Log.d(TAG, String.format(Locale.ROOT, "[CALIB] Progress %d%% (%d/%d), implied=%.2f deg",
+                            progress, samples.size(), REQUIRED_CONVERGENCE_SAMPLES, windowCentre));
+                }
             }
             if (samples.size() >= REQUIRED_CONVERGENCE_SAMPLES) {
                 // Recomputed once the window is full so the aggregation sees every sample.
@@ -305,10 +310,12 @@ public final class AutoCalibrationLearner {
                         status = CalibrationStore.Status.CALIBRATED;
                         progress = 100;
                         trackedPitch = learnedPitch;
-                        Log.i(TAG, String.format(Locale.ROOT,
-                                "[CALIB] CONVERGED: pitch=%.2f deg confirmed by implied %.2f deg "
-                                        + "(spread=%.3f, laneWidth=%.2f m)",
-                                learnedPitch, windowCentre, spread, lastLaneWidthMeters));
+                        if (diagnosticLogging) {
+                            Log.i(TAG, String.format(Locale.ROOT,
+                                    "[CALIB] CONVERGED: pitch=%.2f deg confirmed by implied %.2f deg "
+                                            + "(spread=%.3f, laneWidth=%.2f m)",
+                                    learnedPitch, windowCentre, spread, lastLaneWidthMeters));
+                        }
                         return new StepResult(candidate, status, 100, windowCentre, true);
                     }
                     Log.w(TAG, String.format(Locale.ROOT,
@@ -342,9 +349,11 @@ public final class AutoCalibrationLearner {
                 if (Math.abs(trackedPitch - currentCalibration.pitchDegrees())
                         >= PITCH_UPDATE_THRESHOLD_DEGREES
                         && isLaneRoiVisible(currentCalibration.withPitchDegrees(trackedPitch))) {
-                    Log.i(TAG, String.format(Locale.ROOT,
-                            "[CALIB] Online tracking adjusted pitch: %.2f -> %.2f deg",
-                            currentCalibration.pitchDegrees(), trackedPitch));
+                    if (diagnosticLogging) {
+                        Log.i(TAG, String.format(Locale.ROOT,
+                                "[CALIB] Online tracking adjusted pitch: %.2f -> %.2f deg",
+                                currentCalibration.pitchDegrees(), trackedPitch));
+                    }
                     CameraCalibration updated = currentCalibration.withPitchDegrees(trackedPitch);
                     return new StepResult(updated, status, 100, key, true);
                 }

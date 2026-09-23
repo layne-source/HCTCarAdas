@@ -2,6 +2,10 @@ package com.hct.adas;
 
 /** Converts a confirmed target's bottom edge into a filtered distance and closing speed. */
 public final class LeadVehicleMotionEstimator {
+    /** Diagnostic outcome only; never used to accept measurements or change filtering. */
+    public enum Rejection { NONE, NO_TARGET, NOT_TRACKING, CALIBRATION_UNAVAILABLE,
+        RESOLUTION_MISMATCH, BOX_CLIPPED, DISTANCE_INVALID }
+
     public record Measurement(long trackId, double distanceMeters, double closingSpeedMps,
                               double targetAreaPixels, boolean visible) { }
 
@@ -19,6 +23,12 @@ public final class LeadVehicleMotionEstimator {
     private double initialRawSpeed;
     private double initialSpeedInterval;
     private CameraCalibration previousCalibration;
+    private Rejection lastRejection = Rejection.NONE;
+
+    public Rejection lastRejection() {
+        return lastRejection;
+    }
+
     public Measurement update(LeadVehicleTracker.Snapshot snapshot,
                               CameraCalibration calibration, int width, int height) {
         if (snapshot == null || snapshot.detection() == null
@@ -28,17 +38,23 @@ public final class LeadVehicleMotionEstimator {
             // that gap: when a target reappears, the first valid frame must establish a fresh
             // baseline instead of turning the stale-to-new box delta into a closing-speed spike.
             reset();
+            lastRejection = snapshot == null || snapshot.detection() == null ? Rejection.NO_TARGET
+                    : snapshot.state() != LeadVehicleTracker.State.TRACKING ? Rejection.NOT_TRACKING
+                    : calibration == null ? Rejection.CALIBRATION_UNAVAILABLE
+                    : Rejection.RESOLUTION_MISMATCH;
             return new Measurement(snapshot == null ? 0L : snapshot.trackId(),
                     Double.NaN, 0.0, 0.0, false);
         }
         VehicleDetector.Detection box = snapshot.detection();
         if (box.bottom() >= 0.995f || box.left() <= 0.005f || box.right() >= 0.995f) {
             reset();
+            lastRejection = Rejection.BOX_CLIPPED;
             return new Measurement(snapshot.trackId(), Double.NaN, 0.0, area(box, width, height), false);
         }
         double distance = calibration.estimateDistanceMeters(box.bottom());
         if (!Double.isFinite(distance)) {
             reset();
+            lastRejection = Rejection.DISTANCE_INVALID;
             return new Measurement(snapshot.trackId(), Double.NaN, 0.0, area(box, width, height), false);
         }
         double closingSpeed = 0.0;
@@ -91,11 +107,13 @@ public final class LeadVehicleMotionEstimator {
         previousId = snapshot.trackId();
         previousTimestamp = snapshot.timestampNanos();
         previousCalibration = calibration;
+        lastRejection = Rejection.NONE;
         return new Measurement(snapshot.trackId(), filteredDistance, closingSpeed,
                 area(box, width, height), true);
     }
 
     public void reset() {
+        lastRejection = Rejection.NONE;
         initialized = false;
         previousId = 0L;
         previousTimestamp = 0L;

@@ -21,6 +21,7 @@ import java.util.List;
 /** Displays source-normalized detections in the same cropped viewport as the preview. */
 public final class VehicleOverlayView extends View {
     private static final String TAG = "HctAdasCore";
+    private final boolean diagnosticLogging = Log.isLoggable(TAG, Log.DEBUG);
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint regionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -633,6 +634,9 @@ public final class VehicleOverlayView extends View {
      * read the code.
      */
     private void logLaneDrawing(boolean referenceLines) {
+        if (!diagnosticLogging) {
+            return;
+        }
         long now = System.nanoTime();
         if (now - lastDrawLogNanos < 1_000_000_000L) {
             return;
