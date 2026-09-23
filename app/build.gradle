@@ -26,6 +26,14 @@ android {
         }
     }
 
+    applicationVariants.configureEach { variant ->
+        if (variant.buildType.name == "release") {
+            variant.outputs.configureEach {
+                outputFileName = "HCTCarAdas.apk"
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
