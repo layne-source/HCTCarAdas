@@ -678,7 +678,9 @@ public final class VehicleOverlayView extends View {
         long targetId = currentTargetValid() ? tracking.trackId() : 0L;
         if (targetId == 0L || targetId != colorTargetId || riskLevel(desired) < 0
                 || riskLevel(colorTo) < 0) {
-            arrowsMoving = false;
+            if (shouldResetArrowAnimation(targetId, colorTargetId)) {
+                arrowsMoving = false;
+            }
             colorTargetId = targetId;
             displayColor = colorFrom = colorTo = desired;
             colorFading = false;
@@ -708,6 +710,11 @@ public final class VehicleOverlayView extends View {
 
     private static int riskLevel(int color) {
         return color == GUIDE_RED ? 2 : color == GUIDE_YELLOW ? 1 : color == GUIDE_GREEN ? 0 : -1;
+    }
+
+    /** Color refreshes must not stop the always-flowing normal guide; only a target switch restarts it. */
+    static boolean shouldResetArrowAnimation(long targetId, long previousTargetId) {
+        return targetId != previousTargetId;
     }
 
     private void drawLane(Canvas canvas, float left, float top, float width, float height) {

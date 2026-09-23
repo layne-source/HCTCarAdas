@@ -6,6 +6,7 @@ import static com.hct.adas.FixedGuideController.Mode.MONITORING;
 import static com.hct.adas.FixedGuideController.Mode.NORMAL;
 import static com.hct.adas.FixedGuideController.Mode.WARNING;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -19,6 +20,14 @@ public final class VehicleOverlayStyleTest {
         assertEquals(HIDDEN, VehicleOverlayView.renderModeFor(HIDDEN));
         assertEquals(WARNING, VehicleOverlayView.renderModeFor(WARNING));
         assertEquals(DANGER, VehicleOverlayView.renderModeFor(DANGER));
+    }
+
+    @Test
+    public void colorRefreshDoesNotRestartArrowsWhenTargetIdentityIsUnchanged() {
+        assertFalse(VehicleOverlayView.shouldResetArrowAnimation(0L, 0L));
+        assertTrue(VehicleOverlayView.shouldResetArrowAnimation(7L, 0L));
+        assertTrue(VehicleOverlayView.shouldResetArrowAnimation(0L, 7L));
+        assertFalse(VehicleOverlayView.shouldResetArrowAnimation(7L, 7L));
     }
 
     @Test
