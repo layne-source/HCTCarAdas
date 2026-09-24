@@ -1,10 +1,95 @@
+# ===== Build artifacts & temporary files =====
+*.tmp
+*.log
+*.ap_
+*.aab
+*.dex
+*.class
+*.hprof
+bin/
+gen/
+out/
+
+# APK: ignore generated APKs, but preserve committed release artifacts
+*.apk
+!app/release/*.apk
+
+# ===== Android Studio / Gradle =====
 .gradle/
-.idea/
 build/
 */build/
 local.properties
 *.iml
+.navigation/
 captures/
 .externalNativeBuild/
+.externalNativeBuild
 .cxx/
+.kotlin/
+
+# ===== Keystore & signing config =====
+*.keystore
+keystore.properties
+signing.properties
+# Ignore custom/developer JKS keys, but preserve the repo's platform signing key
+*.jks
+!app/platform.jks
+!platform.jks
+
+# ===== IDE / Editors =====
+.idea/
+.vscode/
+
+# ===== Lint output =====
+lint-results*.html
+lint-results*.xml
+
+# ===== AI tool folders =====
 .workbuddy/
+.kiro/
+.cursor/
+.windsurf/
+.aider/
+.copilot/
+.claude/
+.codex/
+.agents/
+.superpowers/
+
+# ===== Code index tools (ctags/cscope/gtags) =====
+tags
+TAGS
+.ctags
+cscope.out
+cscope.files
+GPATH
+GRTAGS
+GTAGS
+
+# ===== Python caches (scripts/tools) =====
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Debug / crash artifacts =====
+*.trace
+hs_err_pid*.log
+core.*
+
+# ===== OS generated files =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ===== Editor backup / swap files =====
+*~
+*.swp
+*.bak
+*.orig
